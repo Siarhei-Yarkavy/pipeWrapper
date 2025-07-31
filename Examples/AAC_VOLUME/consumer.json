@@ -1,0 +1,12 @@
+{
+  "path": "c:\\mnt\\D\\tools\\foobarOld\\qaac\\qaac64.exe",
+  "params": {
+    "--ignorelength": "",
+    "-s": "",
+    "-V": "109",
+    "-q2": "",
+    "--long-tag": "\"custom gain:%1db\"",
+    "-": "",
+    "-o": "%2"
+  }
+}

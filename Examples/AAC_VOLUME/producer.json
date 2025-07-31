@@ -1,0 +1,11 @@
+{
+  "path": "c:\\mnt\\d\\tools\\ffmpeg\\ffmpeg.exe",
+  "params": {
+    "-i": "-",
+    "-c:a": "pcm_s32le",
+    "-filter:a": "\"volume=%1dB:precision=double,aresample=osf=s32:dither_method=triangular\"",
+    "-f": "wav",
+    "-v": "quiet",
+    "-": ""
+  }
+}
