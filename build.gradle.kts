@@ -1,39 +1,31 @@
+import com.codingfeline.buildkonfig.compiler.FieldSpec.Type.STRING
+import org.gradle.internal.extensions.stdlib.toDefaultLowerCase
+
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
     alias(libs.plugins.kotlinxSerialization)
+    alias(libs.plugins.buildKonfigPlugin)
 }
 
-group = "org.syarkavy"
-version = "0.0.1"
+group = "org.sergy"
+version = "0.0.2"
+val applicationName: String by extra("pipeWrapper")
 
 repositories {
     mavenCentral()
 }
 
 kotlin {
-    /*val hostOs = System.getProperty("os.name")
-    val isArm64 = System.getProperty("os.arch") == "aarch64"
-    val isMingwX64 = hostOs.startsWith("Windows")
-    val nativeTarget = when {
-        hostOs == "Mac OS X" && isArm64 -> macosArm64("native")
-        hostOs == "Mac OS X" && !isArm64 -> macosX64("native")
-        hostOs == "Linux" && isArm64 -> linuxArm64("native")
-        hostOs == "Linux" && !isArm64 -> linuxX64("native")
-        isMingwX64 -> mingwX64("native")
-        else -> throw GradleException("Host OS is not supported in Kotlin/Native.")
-    }*/
-
     val nativeTarget = mingwX64()
     nativeTarget.apply {
         binaries {
             executable(listOf(RELEASE)) {
                 baseName = "${project.name}-${project.version}-${buildType.name.lowercase()}"
-                entryPoint = "main"
+                entryPoint = "${group}.${applicationName.lowercase()}.main"
                 debuggable = false
-                runTaskProvider?.configure {
-                    args("--profile", "BOTH_DRYRUN", "--lmode", "FULL", "-item", "\\\"11\\\"", "-item", "22")
-                }
-                //args("AAC_VOLUME", "-1", "myfile.m4a")
+                    /* add run config if you need runTaskProvider?.configure {
+                    args("-arg1", "param1", "--arg2", "param2"
+                    */
             }
         }
     }
@@ -41,11 +33,17 @@ kotlin {
     sourceSets {
         nativeMain.dependencies {
             implementation(libs.kotlinxSerializationJson)
-            implementation( libs.cliktNative)
-            //implementation("org.jetbrains.kotlin:kotlin-stdlib:2.2.0")
+            implementation(libs.cliktNative)
         }
     }
 }
-/*dependencies {
-   commonMainImplementation("org.jetbrains.kotlin:kotlin-stdlib:2.2.0")
-}*/
+
+buildkonfig {
+    packageName = "$group.${applicationName.lowercase()}"
+
+    // default config is required
+    defaultConfigs {
+        buildConfigField (STRING, "version", version.toString())
+        buildConfigField (STRING, "applicationName",applicationName.lowercase())
+    }
+}

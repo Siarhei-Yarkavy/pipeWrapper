@@ -1,3 +1,5 @@
+package org.sergy.pipewrapper
+
 import kotlinx.cinterop.*
 import platform.posix.*
 import platform.windows.*
@@ -7,7 +9,7 @@ interface ILogger {
     fun log(message: String)
     fun close()
     @OptIn(ExperimentalForeignApi::class)
-    fun getExeErrorLoggingHandle(exe: Executable) = GetStdHandle(STD_ERROR_HANDLE)
+    fun getExeErrorLoggingHandle(exe: Executable): HANDLE? = GetStdHandle(STD_ERROR_HANDLE)
 }
 
 @OptIn(ExperimentalForeignApi::class)
@@ -60,9 +62,10 @@ class Logger private constructor(private val mode: LMODE): ILogger  {
 
     companion object {
         private lateinit var instance: Logger
+        val defaultLMode: LMODE = LMODE.SIL
 
         fun init(strMode: String?) {
-            var mode: LMODE = LMODE.CON
+            var mode: LMODE = defaultLMode
             if (strMode != null && strMode.isNotEmpty()) {
                 mode = LMODE.valueOf(strMode.uppercase())
             }
@@ -85,7 +88,7 @@ class Logger private constructor(private val mode: LMODE): ILogger  {
             if (!isInitialized()) {
                 object : ILogger {
                     override fun log(message: String) {
-                        fputs("Warning! Logger is not initialized! Fallback to console stderr: $message",
+                        fputs("Warning! Logger is not available. Fallback to console stderr: $message",
                             stderr)
                     }
                     override fun close() {
@@ -158,7 +161,7 @@ class Logger private constructor(private val mode: LMODE): ILogger  {
         return (mode in arrayOf(LMODE.INCL, LMODE.CON))
     }
 
-    override fun getExeErrorLoggingHandle(exe: Executable) =
+    override fun getExeErrorLoggingHandle(exe: Executable): CPointer<out CPointed>? =
         if (isFileLogging()) appLogHandles[exe] else GetStdHandle(STD_ERROR_HANDLE)
 
     override fun close() {

@@ -1,4 +1,6 @@
-import exception.PWRuntimeException
+package org.sergy.pipewrapper
+
+import org.sergy.pipewrapper.exception.PWRuntimeException
 import kotlinx.cinterop.*
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -31,7 +33,7 @@ class ExeConfigReader private constructor(profile: String) {
                     Json.decodeFromString<ExeLineConfig>(jsonString)
                 } catch (e: Exception) {
                     Logger.get().log(
-                        "${exe.name} reading config $fullConfigPath deserialization JSON error: ${e.message}"
+                        "${exe.exeName} reading config $fullConfigPath deserialization JSON error: ${e.message}"
                     )
                     throw PWRuntimeException(DESERIALIZATION_JSON_FAILED, cause = e)
                 }
@@ -80,7 +82,6 @@ class ExeConfigReader private constructor(profile: String) {
     fun configExists(exe: Executable): Boolean {
         return configMap.containsKey(exe) && configMap[exe] != null
     }
-
 
     companion object {
         private var instance: ExeConfigReader? = null

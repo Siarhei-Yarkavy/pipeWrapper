@@ -1,14 +1,15 @@
 [versions]
-kotlin = "2.2.20-Beta2"
-kotlinxSerialization = "1.9.0"
-clikt = "5.0.3"
+kotlinVer = "2.2.20-Beta2"
+kotlinxSerializationVer = "1.9.+"
+cliktVer = "5.0.+"
+buildKonfigVer = "0.17.+"
 
 [libraries]
-kotlinxSerializationJson = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinxSerialization" }
-cliktNative = { module = "com.github.ajalt.clikt:clikt", version.ref = "clikt" }
+kotlinxSerializationJson = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinxSerializationVer" }
+cliktNative = { module = "com.github.ajalt.clikt:clikt", version.ref = "cliktVer" }
 
 [plugins]
-kotlinMultiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }
-kotlinxSerialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
-
+kotlinMultiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlinVer" }
+kotlinxSerialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlinVer" }
+buildKonfigPlugin = { id = "com.codingfeline.buildkonfig", version.ref = "buildKonfigVer" }
 

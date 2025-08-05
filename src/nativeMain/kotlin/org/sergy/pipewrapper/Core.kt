@@ -1,14 +1,17 @@
+package org.sergy.pipewrapper
+
 import com.github.ajalt.clikt.core.*
 import com.github.ajalt.clikt.parameters.arguments.argument
 import com.github.ajalt.clikt.parameters.arguments.multiple
 import com.github.ajalt.clikt.parameters.arguments.optional
 import com.github.ajalt.clikt.parameters.options.option
 import com.github.ajalt.clikt.parameters.options.required
+import com.github.ajalt.clikt.parameters.options.versionOption
 import com.github.ajalt.clikt.parameters.types.choice
-import exception.ErrorCodeAware
-import exception.PWIllegalStateException
-import exception.PWRuntimeException
 import kotlinx.cinterop.*
+import org.sergy.pipewrapper.exception.ErrorCodeAware
+import org.sergy.pipewrapper.exception.PWIllegalStateException
+import org.sergy.pipewrapper.exception.PWRuntimeException
 import platform.posix.*
 import platform.windows.GetLastError
 import platform.windows.GetModuleFileNameW
@@ -20,23 +23,22 @@ import kotlin.system.exitProcess
 import kotlin.time.Clock
 import kotlin.time.ExperimentalTime
 
-private const val APP_NAME = "pipeWrapper"
-const val SUCCESSFUL_RETURN = 0
-const val CREATE_PIPE_FAILED = 21
-const val CREATE_LOGGER_FILE_FAILED = 11
-const val GET_LOGGER_INSTANCE_FAILED = 12
-const val CREATING_RUN_ID_FAILED = 13
-const val DESERIALIZATION_JSON_FAILED = 9
-const val CANNOT_GET_EXECUTABLE_DIRECTORY = 7
-const val CONFIGURATION_CONSUMER_ABSENT = 8
-const val REQUESTED_CONFIGURATION_ABSENT = 5
-const val EXE_CONFIG_READER_IS_NOT_INITIALIZED = 6
-const val COMMAND_LINE_PARSING_ERROR = 4
-const val PRODUCER_CREATION_FAILED = 31
-const val CONSUMER_CREATION_FAILED = 41
-const val PROCESS_WAS_KILLED = 99
-const val GENERAL_ERROR = 89
-const val EXECUTABLE_STATE_ERROR = 98
+const val SUCCESSFUL_RETURN: Int = 0
+const val CREATE_PIPE_FAILED: Int = 21
+const val CREATE_LOGGER_FILE_FAILED: Int = 11
+const val GET_LOGGER_INSTANCE_FAILED: Int = 12
+const val CREATING_RUN_ID_FAILED: Int = 13
+const val DESERIALIZATION_JSON_FAILED: Int = 9
+const val CANNOT_GET_EXECUTABLE_DIRECTORY: Int = 7
+const val CONFIGURATION_CONSUMER_ABSENT: Int = 8
+const val REQUESTED_CONFIGURATION_ABSENT: Int = 5
+const val EXE_CONFIG_READER_IS_NOT_INITIALIZED: Int = 6
+const val COMMAND_LINE_PARSING_ERROR: Int = 4
+const val PRODUCER_CREATION_FAILED: Int = 31
+const val CONSUMER_CREATION_FAILED: Int = 41
+const val PROCESS_WAS_KILLED: Int = 99
+const val GENERAL_ERROR: Int = 89
+const val EXECUTABLE_STATE_ERROR: Int = 98
 
 enum class Executable(val exeName: String) {
     PRODUCER("producer"),
@@ -54,32 +56,25 @@ enum class CMDARGS(val paramName: String) {
     LMODE("--lmode")
 }
 
-class PWApp : CliktCommand(name = APP_NAME) {
+class PWApp : CliktCommand(name = BuildKonfig.applicationName) {
 
     val runId: String = generateRunId()
 
-    val profile by option(
+    private val profile by option(
         CMDARGS.PROFILE.paramName,
-        help = "Profile name"
+        help = "Profile name, required"
     ).required()
 
-    val lMode by option(
+    private val lMode by option(
         CMDARGS.LMODE.paramName,
-        help = "logger mode in one of " + Logger.LMODE.entries.joinToString()
+        help = "logger mode in one of " + Logger.LMODE.entries.joinToString() + ", default is " + Logger.defaultLMode
     ).choice(*Logger.LMODE.entries.map { it.name }.toTypedArray(), ignoreCase = true)
 
-    /*val items by option(
-        CMDARGS.ITEM.paramName,
-        help = "List element to replace placeholders enumerated in executable configs"
-    ).multiple()*/
-
-    val items by argument(
+    private val items by argument(
         name = "placeholders",
         help = "List element to replace placeholders enumerated in executable configs",
         helpTags = mapOf(
-            "%1" to "Replaced by first argument",
-            "%2" to "Replaced by second argument",
-            "%N" to "Replaced by N argument"
+            "example" to "%1 Replaced by first argument, %N Replaced by N argument",
         )
     ).multiple().optional()
 
@@ -98,17 +93,15 @@ class PWApp : CliktCommand(name = APP_NAME) {
         Logger.init(cmdConfig.lMode)
         Logger.get().log("Time is ${Clock.System.now()}, we are starting...")
 
-        var exitCode: Int = SUCCESSFUL_RETURN
-        memScoped {
-            val executor = NewExecutor(cmdConfig, this)
-            exitCode = executor.executePipeline()
+        val exitCode: Int = memScoped {
+           NewExecutor(cmdConfig, this).executePipeline()
         }
         if (exitCode != SUCCESSFUL_RETURN) {
             throw ProgramResult(exitCode)
         }
     }
 
-    fun cleanUp() {
+    private fun cleanUp() {
         Logger.safeGet().close()
     }
 
@@ -200,7 +193,7 @@ class PWApp : CliktCommand(name = APP_NAME) {
 
     @OptIn(ExperimentalNativeApi::class, ExperimentalForeignApi::class)
     fun runApp(argv: Array<String>): Int {
-        fun internalLogShort(exitCode: Int) {
+        fun internalLogShort(exitCode: Any) {
             val shortMessage = "ErrorCode=$exitCode, the program finished abnormally"
             Logger.safeGet().log(shortMessage)
         }
@@ -228,11 +221,19 @@ class PWApp : CliktCommand(name = APP_NAME) {
                         internalLogShort(exitCode)
                     }
                 }
+                is PrintMessage -> {
+                    theApp.currentContext.command.echoFormattedHelp(ex)
+                    exitCode = SUCCESSFUL_RETURN
+                }
 
+                is PrintHelpMessage -> {
+                    theApp.currentContext.command.echoFormattedHelp(ex)
+                    exitCode = SUCCESSFUL_RETURN
+                }
                 is CliktError -> {
                     theApp.currentContext.command.echoFormattedHelp(ex)
                     exitCode = COMMAND_LINE_PARSING_ERROR
-                    internalLogShort(exitCode)
+                    internalLogShort("$exitCode(${ex::class.simpleName})")
                 }
 
                 else -> {
@@ -246,11 +247,11 @@ class PWApp : CliktCommand(name = APP_NAME) {
     }
 }
 
-val theApp = PWApp()
+val theApp:PWApp = PWApp()
 
 @OptIn(ExperimentalNativeApi::class)
 fun main(args: Array<String>) {
-    exitProcess(theApp.runApp(args))
+    exitProcess(theApp.versionOption(version = BuildKonfig.version).runApp(args))
 }
 
 @OptIn(ExperimentalContracts::class)

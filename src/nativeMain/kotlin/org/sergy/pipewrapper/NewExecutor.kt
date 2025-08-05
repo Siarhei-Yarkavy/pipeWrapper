@@ -1,6 +1,8 @@
-import exception.PWIllegalStateException
-import exception.PWRuntimeException
+package org.sergy.pipewrapper
+
 import kotlinx.cinterop.*
+import org.sergy.pipewrapper.exception.PWIllegalStateException
+import org.sergy.pipewrapper.exception.PWRuntimeException
 import platform.windows.*
 
 @OptIn(ExperimentalForeignApi::class)
@@ -54,7 +56,6 @@ class NewExecutor {
             val producerSiStartInfo = scope.alloc<STARTUPINFOW>().apply { initStartupInfo() }
 
             producerSiStartInfo.apply {
-                //dwFlags = STARTF_USESTDHANDLES.toUInt()
                 hStdInput = GetStdHandle(STD_INPUT_HANDLE)
                 hStdError = Logger.get().getExeErrorLoggingHandle(Executable.PRODUCER)
                 // Reroute producer output to pipe
@@ -72,9 +73,8 @@ class NewExecutor {
         consumerSiStartInfo.apply {
             dwFlags = STARTF_USESTDHANDLES.toUInt()
             hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE)
-            //hStdError = GetStdHandle(STD_ERROR_HANDLE)
             hStdError = Logger.get().getExeErrorLoggingHandle(Executable.CONSUMER)
-            // if full mode we are getting data read end of pipe
+            // in pipe mode we are getting data from pipe, else - inherited stdin
             hStdInput = if (pipeMode) hReadPipe.value else GetStdHandle(STD_INPUT_HANDLE)
         }
         val consumerCmdString = getCmdString(Executable.CONSUMER, cmdConfig)
@@ -274,8 +274,6 @@ class NewExecutor {
         )
 
     private fun isPipeInitialized(): Boolean {
-        //val bytesAvailable = scope.alloc<UIntVar>()
-
         val waitResult = WaitForSingleObject(hReadPipe.value, 1000u)
 
         if (waitResult == WAIT_TIMEOUT.toUInt()) {

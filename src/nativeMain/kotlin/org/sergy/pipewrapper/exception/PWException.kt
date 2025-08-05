@@ -1,4 +1,4 @@
-package exception
+package org.sergy.pipewrapper.exception
 
 interface ErrorCodeAware {
     val errorCode: Int
