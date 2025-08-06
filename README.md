@@ -48,22 +48,21 @@ flowchart LR
 A[pipeWrapper stdin] --> B[Consumer output to stdout or a fs file]
 ```
 ### Basic concepts
-* Profile.
-<br>
-    A named directory in **the same folder where pipeWrapper is located**. 
-    Profile has `consumer.json` and `producer.json` files with command line parameters
-    and placeholders `%1`, `%2` etc. to replace with passed command line arguments.
-<br><br>
+* Profile.<br>
+        A named directory in **the same folder where pipeWrapper is located**. 
+        Profile has `consumer.json` and `producer.json` files with command line parameters
+        and placeholders `%1`, `%2` etc. to replace with passed command line arguments.
+
     **Absence of `producer.json` is considered as consumer only mode.**
-<br><br>
-* Logging mode
+
+* Logging mode.
   * Silent mode without any logging
   * Console only logging (not useful when running from third-party tools)
   * File(s) only (recommended). Save logs to working directory
   * Both console and file(s) mode (inclusive mode)
 
-### Commandline
-run `pipeWrapper --help` to get commandline hints. 
+### Command line
+Run `pipeWrapper --help` to get command line hints. 
 To avoid collision put `--` before profile placeholders arguments
 and put them after options.
 Example of a commandline arguments:
@@ -71,6 +70,6 @@ Example of a commandline arguments:
 `pipeWrapper.exe --lmode INCL --profile AAC_VOLUME --  -1 "out file.m4a"`
 
 ### Examples
-Example of a profile is located in `Examples` folder.
+Profile data examples are located in `Examples` folder.
 Copy a subfolder to the pipeWrapper executable folder.
 
