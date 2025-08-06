@@ -1,5 +1,4 @@
 import com.codingfeline.buildkonfig.compiler.FieldSpec.Type.STRING
-import org.gradle.internal.extensions.stdlib.toDefaultLowerCase
 
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
