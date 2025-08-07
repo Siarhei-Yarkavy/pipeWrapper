@@ -36,7 +36,7 @@ const val EXE_CONFIG_READER_IS_NOT_INITIALIZED: Int = 6
 const val COMMAND_LINE_PARSING_ERROR: Int = 4
 const val PRODUCER_CREATION_FAILED: Int = 31
 const val CONSUMER_CREATION_FAILED: Int = 41
-const val PROCESS_WAS_KILLED: Int = 99
+const val CHILD_PROCESS_WAS_KILLED: Int = 99
 const val GENERAL_ERROR: Int = 89
 const val EXECUTABLE_STATE_ERROR: Int = 98
 
@@ -198,7 +198,7 @@ class PWApp : CliktCommand(name = BuildKonfig.applicationName) {
             Logger.safeGet().log(shortMessage)
         }
 
-        fun internalLogLong(ex: Exception, exitCode: Int) {
+        fun internalLogLong(ex: Throwable, exitCode: Int) {
             val longMessage = "ErrorCode=$exitCode, Exception was thrown: " +
                     ex.message + "\n\n" + ex.stackTraceToString()
             Logger.safeGet().log(longMessage)
@@ -207,7 +207,7 @@ class PWApp : CliktCommand(name = BuildKonfig.applicationName) {
         return try {
             this.parse(argv)
             SUCCESSFUL_RETURN
-        } catch (ex: Exception) {
+        } catch (ex: Throwable) {
             var exitCode = GENERAL_ERROR
             when (ex) {
                 is ErrorCodeAware -> {

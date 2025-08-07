@@ -21,65 +21,73 @@ class NewExecutor {
     private val appProcessData = mutableMapOf<Executable, ProcessData>()
 
     constructor(cmdConfig: CmdConfig, pScope: MemScope) {
-        ExeConfigReader.install(cmdConfig.profile)
-        this.scope = pScope
-        if (!ExeConfigReader.get().configExists(Executable.CONSUMER)) {
-            throw PWIllegalStateException(
-                CONFIGURATION_CONSUMER_ABSENT, "Consumer configuration is mandatory!"
+        try {
+            ExeConfigReader.install(cmdConfig.profile)
+            this.scope = pScope
+            if (!ExeConfigReader.get().configExists(Executable.CONSUMER)) {
+                throw PWIllegalStateException(
+                    CONFIGURATION_CONSUMER_ABSENT, "Consumer configuration is mandatory!"
+                )
+            }
+            pipeMode = ExeConfigReader.get().configExists(Executable.PRODUCER)
+
+            if (pipeMode) {
+                val saAttr = scope.alloc<SECURITY_ATTRIBUTES>().apply {
+                    nLength = sizeOf<SECURITY_ATTRIBUTES>().toUInt()
+                    bInheritHandle = TRUE
+                    lpSecurityDescriptor = null
+                }
+
+                // 1. Create anonymous pipe
+                hReadPipe = scope.alloc<HANDLEVar>()
+                hWritePipe = scope.alloc<HANDLEVar>()
+                if (CreatePipe(
+                        hReadPipe.ptr,
+                        hWritePipe.ptr,
+                        saAttr.ptr,
+                        0U //system default size
+                    ) == 0
+                ) {
+                    val errorMessage = "Create pipe failed! ${GetLastError()}"
+                    Logger.get().log(errorMessage)
+                    throw PWRuntimeException(CREATE_PIPE_FAILED, errorMessage)
+                }
+
+                val producerPiProcInfo = scope.alloc<PROCESS_INFORMATION>().apply { initProcessInfo() }
+                val producerSiStartInfo = scope.alloc<STARTUPINFOW>().apply { initStartupInfo() }
+
+                producerSiStartInfo.apply {
+                    hStdInput = GetStdHandle(STD_INPUT_HANDLE)
+                    hStdError = Logger.get().getExeErrorLoggingHandle(Executable.PRODUCER)
+                    // Reroute producer output to pipe
+                    hStdOutput = hWritePipe.value
+                }
+                val producerCmdString = getCmdString(Executable.PRODUCER, cmdConfig)
+                appProcessData[Executable.PRODUCER] =
+                    ProcessData(producerCmdString, producerPiProcInfo, producerSiStartInfo)
+
+            }
+
+            val consumerPiProcInfo = scope.alloc<PROCESS_INFORMATION>().apply { initProcessInfo() }
+            val consumerSiStartInfo = scope.alloc<STARTUPINFOW>().apply { initStartupInfo() }
+
+            consumerSiStartInfo.apply {
+                dwFlags = STARTF_USESTDHANDLES.toUInt()
+                hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE)
+                hStdError = Logger.get().getExeErrorLoggingHandle(Executable.CONSUMER)
+                // in pipe mode we are getting data from pipe, else - inherited stdin
+                hStdInput = if (pipeMode) hReadPipe.value else GetStdHandle(STD_INPUT_HANDLE)
+            }
+            val consumerCmdString = getCmdString(Executable.CONSUMER, cmdConfig)
+            appProcessData[Executable.CONSUMER] =
+                ProcessData(consumerCmdString, consumerPiProcInfo, consumerSiStartInfo)
+        } catch (th : Throwable) {
+            Logger.get().log("Error in executor preparation" +
+                    if (th.message != null) ", details are: $th.message" else ""
             )
+            cleanUp()
+            throw th
         }
-        pipeMode = ExeConfigReader.get().configExists(Executable.PRODUCER)
-
-        if (pipeMode) {
-            val saAttr = scope.alloc<SECURITY_ATTRIBUTES>().apply {
-                nLength = sizeOf<SECURITY_ATTRIBUTES>().toUInt()
-                bInheritHandle = TRUE
-                lpSecurityDescriptor = null
-            }
-
-            // 1. Create anonymous pipe
-            hReadPipe = scope.alloc<HANDLEVar>()
-            hWritePipe = scope.alloc<HANDLEVar>()
-            if (CreatePipe(
-                    hReadPipe.ptr,
-                    hWritePipe.ptr,
-                    saAttr.ptr,
-                    0U //system default size
-                ) == 0
-            ) {
-                val errorMessage = "Create pipe failed! ${GetLastError()}"
-                Logger.get().log(errorMessage)
-                throw PWRuntimeException(CREATE_PIPE_FAILED, errorMessage)
-            }
-
-            val producerPiProcInfo = scope.alloc<PROCESS_INFORMATION>().apply { initProcessInfo() }
-            val producerSiStartInfo = scope.alloc<STARTUPINFOW>().apply { initStartupInfo() }
-
-            producerSiStartInfo.apply {
-                hStdInput = GetStdHandle(STD_INPUT_HANDLE)
-                hStdError = Logger.get().getExeErrorLoggingHandle(Executable.PRODUCER)
-                // Reroute producer output to pipe
-                hStdOutput = hWritePipe.value
-            }
-            val producerCmdString = getCmdString(Executable.PRODUCER, cmdConfig)
-            appProcessData[Executable.PRODUCER] =
-                ProcessData(producerCmdString, producerPiProcInfo, producerSiStartInfo)
-
-        }
-
-        val consumerPiProcInfo = scope.alloc<PROCESS_INFORMATION>().apply { initProcessInfo() }
-        val consumerSiStartInfo = scope.alloc<STARTUPINFOW>().apply { initStartupInfo() }
-
-        consumerSiStartInfo.apply {
-            dwFlags = STARTF_USESTDHANDLES.toUInt()
-            hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE)
-            hStdError = Logger.get().getExeErrorLoggingHandle(Executable.CONSUMER)
-            // in pipe mode we are getting data from pipe, else - inherited stdin
-            hStdInput = if (pipeMode) hReadPipe.value else GetStdHandle(STD_INPUT_HANDLE)
-        }
-        val consumerCmdString = getCmdString(Executable.CONSUMER, cmdConfig)
-        appProcessData[Executable.CONSUMER] =
-            ProcessData(consumerCmdString, consumerPiProcInfo, consumerSiStartInfo)
     }
 
     @OptIn(ExperimentalForeignApi::class)
@@ -169,17 +177,13 @@ class NewExecutor {
             return if (consumerExitCode != SUCCESSFUL_RETURN ||
                 (producerExitCode != null && producerExitCode != SUCCESSFUL_RETURN)
             ) {
-                PROCESS_WAS_KILLED
+                CHILD_PROCESS_WAS_KILLED
             } else {
                 SUCCESSFUL_RETURN
             }
 
         } finally {
-            safeCloseHandle(hReadPipe)
-            safeCloseHandle(hWritePipe)
-            for (exe in Executable.entries) {
-                safeCloseHandle(appProcessData[exe]!!.piProcInfo)
-            }
+            cleanUp()
         }
     }
 
@@ -205,22 +209,19 @@ class NewExecutor {
         return builder.toString()
     }
 
-    private fun safeCloseHandle(handle: HANDLEVar) {
-        handle.value.takeIf { it != INVALID_HANDLE_VALUE }?.also {
-                    CloseHandle(it)
-                    it == INVALID_HANDLE_VALUE
+    private fun safeCloseHandle(handle: HANDLEVar?) {
+        handle?.value = handle.value?.takeIf { it != INVALID_HANDLE_VALUE }.let {
+                    CloseHandle(it); INVALID_HANDLE_VALUE
                 }
     }
 
-    private fun safeCloseHandle(pi: PROCESS_INFORMATION) {
-        pi.run {
-            hProcess.takeIf { it != INVALID_HANDLE_VALUE }?.also {
-                CloseHandle(it)
-                it == INVALID_HANDLE_VALUE
+    private fun safeCloseHandle(pi: PROCESS_INFORMATION?) {
+        pi?.run {
+            hProcess = hProcess?.takeIf { it != INVALID_HANDLE_VALUE }.let {
+                CloseHandle(it); INVALID_HANDLE_VALUE
             }
-            hThread.takeIf { it != INVALID_HANDLE_VALUE }?.also {
-                CloseHandle(it)
-                it == INVALID_HANDLE_VALUE
+            hThread = hThread?.takeIf { it != INVALID_HANDLE_VALUE }.let {
+                CloseHandle(it); INVALID_HANDLE_VALUE
             }
         }
     }
@@ -237,7 +238,7 @@ class NewExecutor {
         if (waitResult == WAIT_TIMEOUT.toUInt()) {
             if (TerminateProcess(
                     appProcessData[exe]!!.piProcInfo.hProcess,
-                    PROCESS_WAS_KILLED.toUInt()
+                    CHILD_PROCESS_WAS_KILLED.toUInt()
                 ) == 0
             ) {
                 Logger.get().log("Process termination of ${exe.exeName}  was failed: ${GetLastError()}")
@@ -274,7 +275,7 @@ class NewExecutor {
         )
 
     private fun isPipeInitialized(): Boolean {
-        val waitResult = WaitForSingleObject(hReadPipe.value, 1000u)
+        val waitResult = WaitForSingleObject(hReadPipe?.value, 1000u)
 
         if (waitResult == WAIT_TIMEOUT.toUInt()) {
             Logger.get().log("Pipe is not initialized, is it stuck? terminating EXEs")
@@ -300,5 +301,12 @@ class NewExecutor {
         SecureZeroMemory!!.invoke(ptr, sizeOf<PROCESS_INFORMATION>().toULong())
     }
 
+    private fun cleanUp() {
+        safeCloseHandle(hReadPipe)
+        safeCloseHandle(hWritePipe)
+        for (exe in Executable.entries) {
+            safeCloseHandle(appProcessData[exe]?.piProcInfo)
+        }
+    }
 
 }
