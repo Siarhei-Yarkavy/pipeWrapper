@@ -3,10 +3,10 @@ https://github.com/Siarhei-Yarkavy/pipeWrapper
 
 ## Read this first
 ### Users 
-This tool is indented for experienced users know what is console and pipeline
+This tool is indented for experienced users know what is console and pipeline.
 ### Limitation
-* At the moment Windows 10+ is supported
-* Producer and consumer cannot write stderr to console and log simultaneously
+* At the moment Windows 10+ is supported.
+* Producer and consumer cannot write stderr to console and log simultaneously.
 
 ## Why pipeWrapper?
 ## Problem
@@ -16,7 +16,7 @@ and might be joined in a pipe to route output data from the first tool(producer)
 Also, such tools are used from third-party GUI applications
 like foobar2000 to convert from certain audio/video/image
 to a different one. All these scenarios have complications
-in managing commandline arguments and troubleshooting errors 
+in managing commandline arguments and troubleshooting errors.
 
 ## Solution
 pipeWrapper tool helps here in the following way:
@@ -31,7 +31,7 @@ to log files to easily troubleshoot if something is going wrong.
 ## How to use
 
 ### Data flows
-To understand pipeWrapper tool usage it is good to understand how data flows work. 
+To understand pipeWrapper tool usage it is good to understand how data flow inside the tool works. 
 
 #### Producer and consumer both
 Simplified flow diagram:
@@ -48,14 +48,14 @@ flowchart LR
 A[pipeWrapper stdin] --> B[Consumer output to stdout or a fs file]
 ```
 ### Basic concepts
-* Profile.<br>
+* **Profile.**<br>
         A named directory in **the same folder where pipeWrapper is located**. 
         Profile has `consumer.json` and `producer.json` files with command line parameters
         and placeholders `%1`, `%2` etc. to replace with passed command line arguments.
 
     **Absence of `producer.json` is considered as consumer only mode.**
 
-* Logging mode.
+* **Logging mode**.
   * Silent mode without any logging
   * Console only logging (not useful when running from third-party tools)
   * File(s) only (recommended). Save logs to working directory
@@ -72,4 +72,7 @@ Example of a commandline arguments:
 ### Examples
 Profile data examples are located in `Examples` folder.
 Copy a subfolder to the pipeWrapper executable folder.
+
+### Return codes
+https://github.com/Siarhei-Yarkavy/pipeWrapper/blob/d71896ac87878a07bd11df1f6c7033fd686f9196/src/nativeMain/kotlin/org/sergy/pipewrapper/Core.kt#L26
 
