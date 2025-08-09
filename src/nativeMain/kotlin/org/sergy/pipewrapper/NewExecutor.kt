@@ -174,14 +174,19 @@ class NewExecutor {
                 if (pipeMode) 6000/*to allow consumer finalize theirs flow*/ else mainTimeOut
             )
 
-            val producerFailed = producerExitCode != null && producerExitCode != SUCCESSFUL_RETURN
             val producerTerminated = producerExitCode == CHILD_PROCESS_WAS_KILLED
-            val consumerFailed = consumerExitCode != SUCCESSFUL_RETURN
             val consumerTerminated = consumerExitCode == CHILD_PROCESS_WAS_KILLED
 
+            val producerFailed = producerExitCode != null &&
+                producerExitCode != SUCCESSFUL_RETURN && !producerTerminated
+
+            val consumerFailed = consumerExitCode != SUCCESSFUL_RETURN && !consumerTerminated
+
             if (producerFailed || consumerFailed) {
-                return if (!producerTerminated || !consumerTerminated) AT_LEAST_ONE_CHILD_FAILED
-                        else CHILD_PROCESS_WAS_KILLED
+                return AT_LEAST_ONE_CHILD_FAILED
+            }
+            if (producerTerminated || consumerTerminated) {
+                return CHILD_PROCESS_WAS_KILLED
             }
             return SUCCESSFUL_RETURN
 
@@ -278,7 +283,7 @@ class NewExecutor {
         )
 
     private fun isPipeInitialized(): Boolean {
-        val waitResult = WaitForSingleObject(hReadPipe?.value, 1000u)
+        val waitResult = WaitForSingleObject(hReadPipe.value, 1000u)
 
         if (waitResult == WAIT_TIMEOUT.toUInt()) {
             Logger.get().log("Pipe is not initialized, is it stuck? terminating EXEs")
