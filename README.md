@@ -74,5 +74,5 @@ Profile data examples are located in `Examples` folder.
 Copy a subfolder to the pipeWrapper executable folder.
 
 ### Return codes
-https://github.com/Siarhei-Yarkavy/pipeWrapper/blob/d71896ac87878a07bd11df1f6c7033fd686f9196/src/nativeMain/kotlin/org/sergy/pipewrapper/Core.kt#L26
+https://github.com/Siarhei-Yarkavy/pipeWrapper/blob/df28270b0171a8fba5ac62e84b3f147a2c9fc2c9/src/nativeMain/kotlin/org/sergy/pipewrapper/Core.kt#L26
 
