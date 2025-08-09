@@ -39,6 +39,7 @@ const val CONSUMER_CREATION_FAILED: Int = 41
 const val CHILD_PROCESS_WAS_KILLED: Int = 99
 const val GENERAL_ERROR: Int = 89
 const val EXECUTABLE_STATE_ERROR: Int = 98
+const val AT_LEAST_ONE_CHILD_FAILED: Int = 97
 
 enum class Executable(val exeName: String) {
     PRODUCER("producer"),
@@ -221,12 +222,7 @@ class PWApp : CliktCommand(name = BuildKonfig.applicationName) {
                         internalLogShort(exitCode)
                     }
                 }
-                is PrintMessage -> {
-                    theApp.currentContext.command.echoFormattedHelp(ex)
-                    exitCode = SUCCESSFUL_RETURN
-                }
-
-                is PrintHelpMessage -> {
+                is PrintMessage, is PrintHelpMessage -> {
                     theApp.currentContext.command.echoFormattedHelp(ex)
                     exitCode = SUCCESSFUL_RETURN
                 }

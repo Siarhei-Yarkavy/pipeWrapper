@@ -82,8 +82,8 @@ class NewExecutor {
             appProcessData[Executable.CONSUMER] =
                 ProcessData(consumerCmdString, consumerPiProcInfo, consumerSiStartInfo)
         } catch (th : Throwable) {
-            Logger.get().log("Error in executor preparation" +
-                    if (th.message != null) ", details are: $th.message" else ""
+            Logger.get().log("Error when building executor" +
+                    if (th.message != null) ", details are: ${th.message}" else ""
             )
             cleanUp()
             throw th
@@ -174,13 +174,16 @@ class NewExecutor {
                 if (pipeMode) 6000/*to allow consumer finalize theirs flow*/ else mainTimeOut
             )
 
-            return if (consumerExitCode != SUCCESSFUL_RETURN ||
-                (producerExitCode != null && producerExitCode != SUCCESSFUL_RETURN)
-            ) {
-                CHILD_PROCESS_WAS_KILLED
-            } else {
-                SUCCESSFUL_RETURN
+            val producerFailed = producerExitCode != null && producerExitCode != SUCCESSFUL_RETURN
+            val producerTerminated = producerExitCode == CHILD_PROCESS_WAS_KILLED
+            val consumerFailed = consumerExitCode != SUCCESSFUL_RETURN
+            val consumerTerminated = consumerExitCode == CHILD_PROCESS_WAS_KILLED
+
+            if (producerFailed || consumerFailed) {
+                return if (!producerTerminated || !consumerTerminated) AT_LEAST_ONE_CHILD_FAILED
+                        else CHILD_PROCESS_WAS_KILLED
             }
+            return SUCCESSFUL_RETURN
 
         } finally {
             cleanUp()
@@ -302,8 +305,12 @@ class NewExecutor {
     }
 
     private fun cleanUp() {
-        safeCloseHandle(hReadPipe)
-        safeCloseHandle(hWritePipe)
+        if (this::hReadPipe.isInitialized) {
+            safeCloseHandle(hReadPipe)
+        }
+        if (this::hWritePipe.isInitialized) {
+            safeCloseHandle(hWritePipe)
+        }
         for (exe in Executable.entries) {
             safeCloseHandle(appProcessData[exe]?.piProcInfo)
         }
