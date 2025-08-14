@@ -7,6 +7,10 @@ import platform.windows.*
 
 @OptIn(ExperimentalForeignApi::class)
 class NewExecutor {
+    companion object {
+        const val DEFAULT_TIMEOUT: Int = 1000 * 60 * 5
+    }
+
     private data class ProcessData(
         val cmdLine: String,
         val piProcInfo: PROCESS_INFORMATION,
@@ -81,88 +85,94 @@ class NewExecutor {
             val consumerCmdString = getCmdString(Executable.CONSUMER, cmdConfig)
             appProcessData[Executable.CONSUMER] =
                 ProcessData(consumerCmdString, consumerPiProcInfo, consumerSiStartInfo)
-        } catch (th : Throwable) {
-            Logger.get().log("Error when building executor" +
-                    if (th.message != null) ", details are: ${th.message}" else ""
+        } catch (th: Throwable) {
+            Logger.get().log(
+                "Error when building executor" +
+                        if (th.message != null) ", details are: ${th.message}" else ""
             )
             cleanUp()
             throw th
         }
     }
 
-    @OptIn(ExperimentalForeignApi::class)
+    fun getExes(): Set<Executable> = appProcessData.keys
+
     fun executePipeline(): Int {
         try {
-            if (pipeMode) {
-                val fullProducerCmd =
-                    appProcessData[Executable.PRODUCER]!!.cmdLine.wcstr.getPointer(scope)
-                Logger.get().log("Producer cmd = ${fullProducerCmd.toKString()}")
+            IntraLock.synchronized {
+                if (pipeMode) {
+                    val fullProducerCmd =
+                        appProcessData[Executable.PRODUCER]!!.cmdLine.wcstr.getPointer(scope)
+                    Logger.get().log("Producer cmd = ${fullProducerCmd.toKString()}")
 
+                    if (CreateProcessW(
+                            null,
+                            fullProducerCmd,
+                            null,
+                            null,
+                            TRUE,
+                            0u,
+                            null,
+                            null,
+                            appProcessData[Executable.PRODUCER]!!.siStartInfo.ptr,
+                            appProcessData[Executable.PRODUCER]!!.piProcInfo.ptr
+                        ) == 0
+                    ) {
+                        val message = "Create producer Failed! ${GetLastError()}"
+                        Logger.get().log(message)
+                        safeCloseHandle(hWritePipe)
+                        safeCloseHandle(hReadPipe)
+                        throw PWRuntimeException(PRODUCER_CREATION_FAILED, message)
+                    }
+
+                    val prodPid = appProcessData[Executable.PRODUCER]!!.piProcInfo.dwProcessId
+                    Logger.get().log("Producer process created. PID=$prodPid")
+                    //We created process so could close handle on wrapper side
+                    safeCloseHandle(hWritePipe)
+                }
+
+                val fullConsumerCmd = appProcessData[Executable.CONSUMER]!!.cmdLine.wcstr.getPointer(scope)
+                Logger.get().log("Consumer cmd = ${fullConsumerCmd.toKString()}")
                 if (CreateProcessW(
                         null,
-                        fullProducerCmd,
+                        fullConsumerCmd,
                         null,
                         null,
                         TRUE,
                         0u,
                         null,
                         null,
-                        appProcessData[Executable.PRODUCER]!!.siStartInfo.ptr,
-                        appProcessData[Executable.PRODUCER]!!.piProcInfo.ptr
+                        appProcessData[Executable.CONSUMER]!!.siStartInfo.ptr,
+                        appProcessData[Executable.CONSUMER]!!.piProcInfo.ptr
                     ) == 0
                 ) {
-                    val message = "Create producer Failed! ${GetLastError()}"
+                    val message = "Create Consumer Failed! ${GetLastError()}}"
                     Logger.get().log(message)
-                    safeCloseHandle(hWritePipe)
-                    safeCloseHandle(hReadPipe)
-                    throw PWRuntimeException(PRODUCER_CREATION_FAILED, message)
+                    if (pipeMode) {
+                        safeCloseHandle(hWritePipe)
+                        safeCloseHandle(hReadPipe)
+                        requestProcessTermination(Executable.PRODUCER, 2000)
+                    }
+                    throw PWRuntimeException(CONSUMER_CREATION_FAILED, message)
                 }
 
-                val prodPid = appProcessData[Executable.PRODUCER]!!.piProcInfo.dwProcessId
-                Logger.get().log("Producer process created. PID=$prodPid")
-                //We created process so could close handle on wrapper side
-                safeCloseHandle(hWritePipe)
-            }
+                val consumerPid = appProcessData[Executable.CONSUMER]!!.piProcInfo.dwProcessId
+                Logger.get().log("Consumer process created. PID=$consumerPid")
 
-            val fullConsumerCmd = appProcessData[Executable.CONSUMER]!!.cmdLine.wcstr.getPointer(scope)
-            Logger.get().log("Consumer cmd = ${fullConsumerCmd.toKString()}")
-            if (CreateProcessW(
-                    null,
-                    fullConsumerCmd,
-                    null,
-                    null,
-                    TRUE,
-                    0u,
-                    null,
-                    null,
-                    appProcessData[Executable.CONSUMER]!!.siStartInfo.ptr,
-                    appProcessData[Executable.CONSUMER]!!.piProcInfo.ptr
-                ) == 0
-            ) {
-                val message = "Create Consumer Failed! ${GetLastError()}}"
-                Logger.get().log(message)
-                if (pipeMode) {
-                    safeCloseHandle(hWritePipe)
-                    safeCloseHandle(hReadPipe)
-                    requestProcessTermination(Executable.PRODUCER, 2000)
-                }
-                throw PWRuntimeException(CONSUMER_CREATION_FAILED, message)
             }
-            val consumerPid = appProcessData[Executable.CONSUMER]!!.piProcInfo.dwProcessId
-            Logger.get().log("Consumer process created. PID=$consumerPid")
-
             //now checking if consumer failed? fast after start, producer might be in hung state this case
             val consumerFailedOrFinishedFast = isProcessTerminated(Executable.CONSUMER)
-            Logger.get().log("Detected consumer state as " +
-                    if (consumerFailedOrFinishedFast) "dead" else "alive"
+            Logger.get().log(
+                "Detected consumer state as " +
+                        if (consumerFailedOrFinishedFast) "dead" else "alive"
             )
 
             var producerExitCode: Int? = null
-            val mainTimeOut =  if (consumerFailedOrFinishedFast || !isPipeInitialized()) {
-                    2000
-                } else {
-                    1000 * 60 * 5
-                }
+            val mainTimeOut = if (consumerFailedOrFinishedFast || !isPipeInitialized()) {
+                2000
+            } else {
+                DEFAULT_TIMEOUT
+            }
 
             if (pipeMode) {
                 safeCloseHandle(hReadPipe) //as consumer was able to start
@@ -178,7 +188,7 @@ class NewExecutor {
             val consumerTerminated = consumerExitCode == CHILD_PROCESS_WAS_KILLED
 
             val producerFailed = producerExitCode != null &&
-                producerExitCode != SUCCESSFUL_RETURN && !producerTerminated
+                    producerExitCode != SUCCESSFUL_RETURN && !producerTerminated
 
             val consumerFailed = consumerExitCode != SUCCESSFUL_RETURN && !consumerTerminated
 
@@ -219,8 +229,8 @@ class NewExecutor {
 
     private fun safeCloseHandle(handle: HANDLEVar?) {
         handle?.value = handle.value?.takeIf { it != INVALID_HANDLE_VALUE }.let {
-                    CloseHandle(it); INVALID_HANDLE_VALUE
-                }
+            CloseHandle(it); INVALID_HANDLE_VALUE
+        }
     }
 
     private fun safeCloseHandle(pi: PROCESS_INFORMATION?) {
@@ -234,8 +244,7 @@ class NewExecutor {
         }
     }
 
-    @OptIn(ExperimentalForeignApi::class)
-    private fun requestProcessTermination(exe: Executable, timeout: Int): Int {
+    fun requestProcessTermination(exe: Executable, timeout: Int): Int {
         // Time to take graceful shutdown
         val waitResult = WaitForSingleObject(
             appProcessData[exe]!!.piProcInfo.hProcess,
@@ -275,7 +284,6 @@ class NewExecutor {
         return signedValue
     }
 
-    @OptIn(ExperimentalForeignApi::class)
     private fun isProcessTerminated(exe: Executable): Boolean =
         WAIT_OBJECT_0 == WaitForSingleObject(
             appProcessData[exe]!!.piProcInfo.hProcess,
@@ -296,14 +304,12 @@ class NewExecutor {
 
     }
 
-    @OptIn(ExperimentalForeignApi::class)
     private fun STARTUPINFO.initStartupInfo() {
         SecureZeroMemory!!.invoke(ptr, sizeOf<STARTUPINFO>().toULong())
         cb = sizeOf<STARTUPINFO>().toUInt()
         dwFlags = STARTF_USESTDHANDLES.toUInt()
     }
 
-    @OptIn(ExperimentalForeignApi::class)
     private fun PROCESS_INFORMATION.initProcessInfo() {
         // memset looks as possible alternative
         SecureZeroMemory!!.invoke(ptr, sizeOf<PROCESS_INFORMATION>().toULong())

@@ -13,11 +13,11 @@ import org.sergy.pipewrapper.exception.ErrorCodeAware
 import org.sergy.pipewrapper.exception.PWIllegalStateException
 import org.sergy.pipewrapper.exception.PWRuntimeException
 import platform.posix.*
-import platform.windows.GetLastError
-import platform.windows.GetModuleFileNameW
+import platform.windows.*
+import platform.windows.SetConsoleCtrlHandler
+import kotlin.concurrent.AtomicReference
 import kotlin.contracts.ExperimentalContracts
 import kotlin.contracts.contract
-import kotlin.experimental.ExperimentalNativeApi
 import kotlin.random.Random
 import kotlin.system.exitProcess
 import kotlin.time.Clock
@@ -40,6 +40,7 @@ const val CHILD_PROCESS_WAS_KILLED: Int = 99
 const val GENERAL_ERROR: Int = 89
 const val EXECUTABLE_STATE_ERROR: Int = 98
 const val AT_LEAST_ONE_CHILD_FAILED: Int = 97
+const val ERROR_SETUP_CONSOLE_STATE: Int = 88
 
 enum class Executable(val exeName: String) {
     PRODUCER("producer"),
@@ -49,17 +50,20 @@ enum class Executable(val exeName: String) {
 data class CmdConfig(
     val profile: String,
     val lMode: String?,
+    val tmout: String?,
     val itemsList: List<String>?
 )
 
 enum class CMDARGS(val paramName: String) {
     PROFILE("--profile"),
-    LMODE("--lmode")
+    LMODE("--lmode"),
+    TIMEOUT("--tmout")
 }
-
+@OptIn(ExperimentalForeignApi::class, ExperimentalTime::class)
 class PWApp : CliktCommand(name = BuildKonfig.applicationName) {
 
     val runId: String = generateRunId()
+    val executor : AtomicReference<NewExecutor?> = AtomicReference(null)
 
     private val profile by option(
         CMDARGS.PROFILE.paramName,
@@ -71,6 +75,11 @@ class PWApp : CliktCommand(name = BuildKonfig.applicationName) {
         help = "logger mode in one of " + Logger.LMODE.entries.joinToString() + ", default is " + Logger.defaultLMode
     ).choice(*Logger.LMODE.entries.map { it.name }.toTypedArray(), ignoreCase = true)
 
+    private val tmout by option(
+        CMDARGS.TIMEOUT.paramName,
+        help = "Timeout before force terminating child processes, default is " + NewExecutor.DEFAULT_TIMEOUT
+    )
+
     private val items by argument(
         name = "placeholders",
         help = "List element to replace placeholders enumerated in executable configs",
@@ -79,27 +88,47 @@ class PWApp : CliktCommand(name = BuildKonfig.applicationName) {
         )
     ).multiple().optional()
 
+
     override fun run() {
         val config = CmdConfig(
             profile = profile,
             lMode = lMode,
+            tmout = tmout,
             itemsList = items
         )
-        runLogic(config)
-    }
+        Logger.init(config.lMode)
+        Logger.get().log("ISO time is ${Clock.System.now()}, we are starting...")
+        memScoped {
+            executor.getAndSet( NewExecutor(config, this))
 
-    @OptIn(ExperimentalForeignApi::class, ExperimentalTime::class)
-    private fun runLogic(cmdConfig: CmdConfig) {
+            val hStdin = GetStdHandle(STD_INPUT_HANDLE.toUInt())
+            if (hStdin == null || hStdin == INVALID_HANDLE_VALUE) {
+                Logger.get().log("Failed to get app STDIN handle!")
+                exitProcess(ERROR_SETUP_CONSOLE_STATE)
+            }
 
-        Logger.init(cmdConfig.lMode)
-        Logger.get().log("Time is ${Clock.System.now()}, we are starting...")
+            val mode = alloc<DWORDVar>()
+            if (GetConsoleMode(hStdin, mode.ptr) == 0) {
+                Logger.get().log("Failed to get console mode!")
+                exitProcess(ERROR_SETUP_CONSOLE_STATE)
+            }
+                // Отключаем ENABLE_PROCESSED_INPUT для Ctrl+C
+            if (SetConsoleMode(hStdin, mode.value and ENABLE_PROCESSED_INPUT.inv().toUInt()) == 0) {
+                Logger.get().log("Failed to set console mode")
+                exitProcess(ERROR_SETUP_CONSOLE_STATE)
+            }
 
-        val exitCode: Int = memScoped {
-           NewExecutor(cmdConfig, this).executePipeline()
+            val handler = staticCFunction(::ctrlHandler)
+            if (SetConsoleCtrlHandler(handler, TRUE) == 0) {
+                Logger.get().log("Error installing CTRL+BREAK handler")
+            }
+
+            val exitCode: Int = executor.value?.executePipeline() ?: GENERAL_ERROR
+            if (exitCode != SUCCESSFUL_RETURN) {
+                throw ProgramResult(exitCode)
+            }
         }
-        if (exitCode != SUCCESSFUL_RETURN) {
-            throw ProgramResult(exitCode)
-        }
+
     }
 
     private fun cleanUp() {
@@ -110,8 +139,7 @@ class PWApp : CliktCommand(name = BuildKonfig.applicationName) {
         return "The following command line options are available."
     }
 
-    @OptIn(ExperimentalForeignApi::class)
-    fun generateRunId(): String = memScoped {
+    private fun generateRunId(): String = memScoped {
 
         @OptIn(ExperimentalForeignApi::class)
         fun formatTimeSafe(tm: tm, millis: Int): String {
@@ -164,7 +192,6 @@ class PWApp : CliktCommand(name = BuildKonfig.applicationName) {
         "${timePart}_$randomPart"
     }
 
-    @OptIn(ExperimentalForeignApi::class)
     fun getExecutableDirectory(): String = memScoped {
         // Create max length buffer
         val bufferLength = 32767
@@ -192,7 +219,6 @@ class PWApp : CliktCommand(name = BuildKonfig.applicationName) {
         exeDir
     }
 
-    @OptIn(ExperimentalNativeApi::class, ExperimentalForeignApi::class)
     fun runApp(argv: Array<String>): Int {
         fun internalLogShort(exitCode: Any) {
             val shortMessage = "ErrorCode=$exitCode, the program finished abnormally"
@@ -245,9 +271,13 @@ class PWApp : CliktCommand(name = BuildKonfig.applicationName) {
 
 val theApp:PWApp = PWApp()
 
-@OptIn(ExperimentalNativeApi::class)
+@OptIn(ExperimentalForeignApi::class)
 fun main(args: Array<String>) {
-    exitProcess(theApp.versionOption(version = BuildKonfig.version).runApp(args))
+    try {
+        exitProcess(theApp.versionOption(version = BuildKonfig.version).runApp(args))
+    } finally {
+        IntraLock.dispose()
+    }
 }
 
 @OptIn(ExperimentalContracts::class)
@@ -268,3 +298,33 @@ inline fun <T : Any> extendedCheckNotNull(
     }
     return value
 }
+
+@OptIn(ExperimentalForeignApi::class)
+fun ctrlHandler(ctrlType: DWORD): BOOL {
+    if (ctrlType == CTRL_BREAK_EVENT.toUInt()) {
+        Logger.safeGet().log("Ctrl+BREAK is not supported! Use default timeout or taskkill command")
+        //return TRUE // Return true to avoid shutdown
+        //Logger.safeGet().log(theApp.executor?.safeGetProdIds().toString())
+        IntraLock.synchronized {
+            theApp.executor.value?.run {
+            getExes().forEach { exe ->
+                    Logger.safeGet().log("Terminating ${exe.exeName}")
+                    val exitCode = requestProcessTermination(exe, 100)
+                    Logger.safeGet().log("Terminated ${exe.exeName} with code=$exitCode")
+                }
+            }
+        }
+        ExitProcess(23u)
+    }
+    return FALSE // Continue for other events
+}
+
+
+/*@OptIn(ExperimentalForeignApi::class)
+@Suppress("UNUSED_PARAMETER")
+//@SymbolName("SetConsoleCtrlHandler")
+external fun consoleCtrlHandler(
+    handler: CPointer<CFunction<(DWORD) -> BOOL>>?,
+    add: BOOL
+): BOOL
+*/
