@@ -4,9 +4,14 @@ import kotlinx.cinterop.*
 import org.sergy.pipewrapper.exception.PWIllegalStateException
 import org.sergy.pipewrapper.exception.PWRuntimeException
 import platform.windows.*
+import kotlin.concurrent.atomics.AtomicBoolean
+import kotlin.concurrent.atomics.ExperimentalAtomicApi
 
-@OptIn(ExperimentalForeignApi::class)
+@OptIn(ExperimentalForeignApi::class, ExperimentalAtomicApi::class)
 class NewExecutor {
+    companion object {
+        const val DEFAULT_TIMEOUT: Int = 60 * 5 //in seconds
+    }
     private data class ProcessData(
         val cmdLine: String,
         val piProcInfo: PROCESS_INFORMATION,
@@ -15,6 +20,8 @@ class NewExecutor {
 
     private val scope: MemScope
     private val pipeMode: Boolean
+    private val actualTimeOut: Int
+    var shouldShutShutdown: AtomicBoolean = AtomicBoolean(false)
     private lateinit var hReadPipe: HANDLEVar
     private lateinit var hWritePipe: HANDLEVar
 
@@ -24,6 +31,7 @@ class NewExecutor {
         try {
             ExeConfigReader.install(cmdConfig.profile)
             this.scope = pScope
+            actualTimeOut =  cmdConfig.t?.toIntOrNull() ?: DEFAULT_TIMEOUT
             if (!ExeConfigReader.get().configExists(Executable.CONSUMER)) {
                 throw PWIllegalStateException(
                     CONFIGURATION_CONSUMER_ABSENT, "Consumer configuration is mandatory!"
@@ -90,7 +98,6 @@ class NewExecutor {
         }
     }
 
-    @OptIn(ExperimentalForeignApi::class)
     fun executePipeline(): Int {
         try {
             if (pipeMode) {
@@ -152,27 +159,41 @@ class NewExecutor {
             Logger.get().log("Consumer process created. PID=$consumerPid")
 
             //now checking if consumer failed? fast after start, producer might be in hung state this case
-            val consumerFailedOrFinishedFast = isProcessTerminated(Executable.CONSUMER)
+            val consumerFailedOrFinishedFast = isProcessTerminated(Executable.CONSUMER, 3000)
             Logger.get().log("Detected consumer state as " +
-                    if (consumerFailedOrFinishedFast) "dead" else "alive"
+                    if (consumerFailedOrFinishedFast) "dead (It wasn't necessarily due to an error)" else "alive"
             )
 
             var producerExitCode: Int? = null
-            val mainTimeOut =  if (consumerFailedOrFinishedFast || !isPipeInitialized()) {
-                    2000
-                } else {
-                    1000 * 60 * 5
-                }
+            val initialShutdownValue: Boolean = consumerFailedOrFinishedFast
+                    || !isPipeInitializedOrUnknown(appProcessData[Executable.CONSUMER]!!.siStartInfo.hStdInput)
 
-            if (pipeMode) {
-                safeCloseHandle(hReadPipe) //as consumer was able to start
-                producerExitCode = requestProcessTermination(Executable.PRODUCER, mainTimeOut)
+            //As consumer was able to start closing our end of pipe
+            if (pipeMode) safeCloseHandle(hReadPipe)
+
+            var passedSeconds = 0
+            val throttleTime = 5 //in seconds
+            val receivedShouldShutdown = shouldShutShutdown.compareAndExchange(false,
+                    initialShutdownValue)
+            Logger.get().log("Timeout to finish operation is $actualTimeOut seconds")
+
+            while (passedSeconds < actualTimeOut && !shouldShutShutdown.load()) {
+                if (isProcessTerminated(Executable.CONSUMER, throttleTime * 1000)) break
+                passedSeconds = passedSeconds.plus(throttleTime)
+                val secInMin = 60
+                if (passedSeconds % secInMin == 0) {
+                    Logger.get().log("Passed minutes: ${passedSeconds/secInMin}")
+                }
             }
 
-            val consumerExitCode = requestProcessTermination(
-                Executable.CONSUMER,
-                if (pipeMode) 6000/*to allow consumer finalize theirs flow*/ else mainTimeOut
-            )
+            if (initialShutdownValue != shouldShutShutdown.load() || receivedShouldShutdown) {
+                Logger.get().log("Received shutdown signal!")
+            }
+            if (appProcessData[Executable.PRODUCER]?.piProcInfo?.hProcess != null) {
+                producerExitCode = requestProcessTermination(Executable.PRODUCER, 1000)
+            }
+
+            val consumerExitCode = requestProcessTermination(Executable.CONSUMER, 1000)
 
             val producerTerminated = producerExitCode == CHILD_PROCESS_WAS_KILLED
             val consumerTerminated = consumerExitCode == CHILD_PROCESS_WAS_KILLED
@@ -234,7 +255,6 @@ class NewExecutor {
         }
     }
 
-    @OptIn(ExperimentalForeignApi::class)
     private fun requestProcessTermination(exe: Executable, timeout: Int): Int {
         // Time to take graceful shutdown
         val waitResult = WaitForSingleObject(
@@ -275,35 +295,33 @@ class NewExecutor {
         return signedValue
     }
 
-    @OptIn(ExperimentalForeignApi::class)
-    private fun isProcessTerminated(exe: Executable): Boolean =
+    private fun isProcessTerminated(exe: Executable, timeout: Int): Boolean =
         WAIT_OBJECT_0 == WaitForSingleObject(
-            appProcessData[exe]!!.piProcInfo.hProcess,
-            4000u
-        )
+            appProcessData[exe]!!.piProcInfo.hProcess,timeout.toUInt())
 
-    private fun isPipeInitialized(): Boolean {
-        val waitResult = WaitForSingleObject(hReadPipe.value, 1000u)
+    private fun isPipeInitializedOrUnknown(handle: HANDLE?): Boolean {
+        val waitResult = WaitForSingleObject(handle, 1000u)
 
         if (waitResult == WAIT_TIMEOUT.toUInt()) {
-            Logger.get().log("Pipe is not initialized, is it stuck? terminating EXEs")
+            Logger.get().log("Data handle is not initialized, is it stuck? terminating EXEs")
             return false
         } else if (waitResult == WAIT_OBJECT_0) {
-            Logger.get().log("Pipe initialized")
+            Logger.get().log("Data handle initialized")
+            return true
+        } else if (waitResult == WAIT_FAILED) {
+            Logger.get().log("Data handle looks invalid, however we continue")
             return true
         }
         return false
 
     }
 
-    @OptIn(ExperimentalForeignApi::class)
     private fun STARTUPINFO.initStartupInfo() {
         SecureZeroMemory!!.invoke(ptr, sizeOf<STARTUPINFO>().toULong())
         cb = sizeOf<STARTUPINFO>().toUInt()
         dwFlags = STARTF_USESTDHANDLES.toUInt()
     }
 
-    @OptIn(ExperimentalForeignApi::class)
     private fun PROCESS_INFORMATION.initProcessInfo() {
         // memset looks as possible alternative
         SecureZeroMemory!!.invoke(ptr, sizeOf<PROCESS_INFORMATION>().toULong())

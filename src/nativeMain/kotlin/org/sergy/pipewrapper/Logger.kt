@@ -1,9 +1,9 @@
 package org.sergy.pipewrapper
 
 import kotlinx.cinterop.*
+import org.sergy.pipewrapper.exception.PWIllegalStateException
 import platform.posix.*
 import platform.windows.*
-import kotlin.system.exitProcess
 
 interface ILogger {
     fun log(message: String)
@@ -30,7 +30,7 @@ class Logger private constructor(private val mode: LMODE): ILogger  {
             file = fopen("${runId}-${theApp.commandName}.log", "w")
             if (file == null) {
                 perror("Failed to open main log file")
-                exitProcess(CREATE_LOGGER_FILE_FAILED)
+                throw PWIllegalStateException(CREATE_MAIN_LOGGER_FAILED)
             }
             memScoped {
                 val saAttr = alloc<SECURITY_ATTRIBUTES>().apply {
@@ -52,7 +52,7 @@ class Logger private constructor(private val mode: LMODE): ILogger  {
                     if (logHandle == INVALID_HANDLE_VALUE || logHandle == null) {
                         fputs("Error creating log file for ${exe.name}! Error code ${GetLastError()}\n",
                             stderr)
-                        exitProcess(CREATE_LOGGER_FILE_FAILED)
+                        throw PWIllegalStateException(CREATE_EXECUTABLE_LOGGER_FAILED)
                     }
                     appLogHandles[exe] = logHandle
                 }
@@ -65,10 +65,7 @@ class Logger private constructor(private val mode: LMODE): ILogger  {
         val defaultLMode: LMODE = LMODE.SIL
 
         fun init(strMode: String?) {
-            var mode: LMODE = defaultLMode
-            if (strMode != null && strMode.isNotEmpty()) {
-                mode = LMODE.valueOf(strMode.uppercase())
-            }
+            val mode = strMode?.uppercase()?.let(LMODE::valueOf) ?: defaultLMode
             instance = Logger(mode)
         }
 
@@ -78,7 +75,7 @@ class Logger private constructor(private val mode: LMODE): ILogger  {
                         "\nErrno value ")
                 fputs("ExitCode=$GET_LOGGER_INSTANCE_FAILED, Stack trace:\n" +
                         Throwable().stackTraceToString(), stderr)
-                exitProcess(GET_LOGGER_INSTANCE_FAILED)
+                throw PWIllegalStateException(GET_LOGGER_INSTANCE_FAILED)
 
             } else {
                 instance

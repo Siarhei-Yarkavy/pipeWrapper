@@ -5,7 +5,6 @@ import kotlinx.cinterop.*
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import platform.posix.*
-import kotlin.experimental.ExperimentalNativeApi
 
 @Serializable
 data class ExeLineConfig(
@@ -21,7 +20,7 @@ class ExeConfigReader private constructor(profile: String) {
         loadConfig()
     }
 
-    @OptIn(ExperimentalForeignApi::class, ExperimentalNativeApi::class)
+    @OptIn(ExperimentalForeignApi::class)
     private fun loadConfig(): MutableMap<Executable, ExeLineConfig> {
         Logger.get().log("Reading configuration from path \"$filePath\"")
         val mutableConfigMap: MutableMap<Executable, ExeLineConfig> = mutableMapOf()

@@ -1,5 +1,5 @@
 [versions]
-kotlinVer = "2.2.20-Beta2"
+kotlinVer = "2.2.20-RC"
 kotlinxSerializationVer = "1.9.+"
 cliktVer = "5.0.+"
 buildKonfigVer = "0.17.+"

@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "org.sergy"
-version = "0.0.4"
+version = "0.1.0"
 val applicationName: String by extra("pipeWrapper")
 
 repositories {

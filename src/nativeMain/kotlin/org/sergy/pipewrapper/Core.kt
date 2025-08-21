@@ -13,8 +13,9 @@ import org.sergy.pipewrapper.exception.ErrorCodeAware
 import org.sergy.pipewrapper.exception.PWIllegalStateException
 import org.sergy.pipewrapper.exception.PWRuntimeException
 import platform.posix.*
-import platform.windows.GetLastError
-import platform.windows.GetModuleFileNameW
+import platform.windows.*
+import kotlin.concurrent.atomics.AtomicReference
+import kotlin.concurrent.atomics.ExperimentalAtomicApi
 import kotlin.contracts.ExperimentalContracts
 import kotlin.contracts.contract
 import kotlin.experimental.ExperimentalNativeApi
@@ -25,7 +26,8 @@ import kotlin.time.ExperimentalTime
 
 const val SUCCESSFUL_RETURN: Int = 0
 const val CREATE_PIPE_FAILED: Int = 21
-const val CREATE_LOGGER_FILE_FAILED: Int = 11
+const val CREATE_MAIN_LOGGER_FAILED: Int = 11
+const val CREATE_EXECUTABLE_LOGGER_FAILED: Int = 14
 const val GET_LOGGER_INSTANCE_FAILED: Int = 12
 const val CREATING_RUN_ID_FAILED: Int = 13
 const val DESERIALIZATION_JSON_FAILED: Int = 9
@@ -40,6 +42,9 @@ const val CHILD_PROCESS_WAS_KILLED: Int = 99
 const val GENERAL_ERROR: Int = 89
 const val EXECUTABLE_STATE_ERROR: Int = 98
 const val AT_LEAST_ONE_CHILD_FAILED: Int = 97
+const val ERROR_SETUP_CONSOLE_STATE: Int = 88
+const val ERROR_WRONG_CONSOLE_TYPE: Int = 82
+const val ERROR_UNKNOWN_CONSOLE_TYPE: Int = 83
 
 enum class Executable(val exeName: String) {
     PRODUCER("producer"),
@@ -49,17 +54,23 @@ enum class Executable(val exeName: String) {
 data class CmdConfig(
     val profile: String,
     val lMode: String?,
+    val t: String?,
     val itemsList: List<String>?
 )
 
 enum class CMDARGS(val paramName: String) {
     PROFILE("--profile"),
-    LMODE("--lmode")
+    LMODE("--lmode"),
+    TIMEOUT("--t")
 }
 
+@OptIn(ExperimentalForeignApi::class)
 class PWApp : CliktCommand(name = BuildKonfig.applicationName) {
 
     val runId: String = generateRunId()
+
+    @OptIn(ExperimentalAtomicApi::class)
+    val executor: AtomicReference<NewExecutor?> = AtomicReference(null)
 
     private val profile by option(
         CMDARGS.PROFILE.paramName,
@@ -70,6 +81,11 @@ class PWApp : CliktCommand(name = BuildKonfig.applicationName) {
         CMDARGS.LMODE.paramName,
         help = "logger mode in one of " + Logger.LMODE.entries.joinToString() + ", default is " + Logger.defaultLMode
     ).choice(*Logger.LMODE.entries.map { it.name }.toTypedArray(), ignoreCase = true)
+
+    private val t by option(
+        CMDARGS.TIMEOUT.paramName,
+        help = "Timeout before force terminating child processes, default is " + NewExecutor.DEFAULT_TIMEOUT
+    )
 
     private val items by argument(
         name = "placeholders",
@@ -83,22 +99,89 @@ class PWApp : CliktCommand(name = BuildKonfig.applicationName) {
         val config = CmdConfig(
             profile = profile,
             lMode = lMode,
+            t = t,
             itemsList = items
         )
         runLogic(config)
     }
 
-    @OptIn(ExperimentalForeignApi::class, ExperimentalTime::class)
+    @OptIn(ExperimentalTime::class, ExperimentalAtomicApi::class)
     private fun runLogic(cmdConfig: CmdConfig) {
 
         Logger.init(cmdConfig.lMode)
-        Logger.get().log("Time is ${Clock.System.now()}, we are starting...")
+        Logger.get().log("ISO time is ${Clock.System.now()}, we are starting...")
 
-        val exitCode: Int = memScoped {
-           NewExecutor(cmdConfig, this).executePipeline()
-        }
-        if (exitCode != SUCCESSFUL_RETURN) {
-            throw ProgramResult(exitCode)
+        memScoped {
+            val hIn = GetStdHandle(STD_INPUT_HANDLE)
+            if (hIn == INVALID_HANDLE_VALUE) {
+                val message = "Could not get stdin!"
+                Logger.get().log(message)
+                throw PWIllegalStateException(ERROR_SETUP_CONSOLE_STATE, message)
+            }
+
+            val fileType = GetFileType(hIn)
+            when (fileType.toInt()) {
+                FILE_TYPE_CHAR -> {
+                    Logger.get().log("[!] stdin connected to text console")
+                    Logger.get().log("[!] $commandName.exe expects binary data")
+                    Logger.get().log("[!] use in cmd \"$commandName [args] < input.wav\"")
+                    Logger.get().log(
+                        "[!] or use in pwsh \"Get-Content input.wav -AsByteStream | & .\\$commandName [args]\'")
+                    throw ProgramResult(ERROR_WRONG_CONSOLE_TYPE)
+                }
+                FILE_TYPE_DISK, FILE_TYPE_PIPE -> Unit
+                else -> {
+                    Logger.get().log("[!] Unknown type of stdin type: $fileType")
+                    throw ProgramResult(ERROR_UNKNOWN_CONSOLE_TYPE)
+                }
+            }
+
+            executor.store(NewExecutor(cmdConfig, this))
+
+            val hConsole = CreateFileW(
+                "CONIN$",
+                GENERIC_READ or GENERIC_WRITE.toUInt(),
+                FILE_SHARE_READ.toUInt() or FILE_SHARE_WRITE.toUInt(),
+                null,
+                OPEN_EXISTING.toUInt(),
+                0u,
+                null
+            )
+
+            if (hConsole == null || hConsole == INVALID_HANDLE_VALUE) {
+                val message = "Cannot open console handle!"
+                Logger.get().log(message)
+                throw PWIllegalStateException(ERROR_SETUP_CONSOLE_STATE, message)
+            }
+
+            val mode = alloc<DWORDVar>()
+            if (GetConsoleMode(hConsole, mode.ptr) == 0) {
+                val message = "Failed to get console mode!"
+                Logger.get().log(message)
+                throw PWIllegalStateException(ERROR_SETUP_CONSOLE_STATE, message)
+
+            }
+            // Disable ENABLE_PROCESSED_INPUT для Ctrl+C
+            if (SetConsoleMode(
+                    hConsole,
+                    mode.value and ENABLE_PROCESSED_INPUT.inv().toUInt()
+                ) == 0
+            ) {
+                Logger.get().log("Failed to set console mode to ignore CTRL+C")
+                throw PWIllegalStateException(ERROR_SETUP_CONSOLE_STATE)
+            }
+
+            val handler = staticCFunction(::ctrlHandler)
+            if (SetConsoleCtrlHandler(handler, TRUE) == 0) {
+                val message = "Error installing CTRL+BREAK handler!"
+                Logger.get().log(message)
+                throw PWIllegalStateException(ERROR_SETUP_CONSOLE_STATE, message)
+            }
+
+            val exitCode: Int = executor.load()?.executePipeline() ?: GENERAL_ERROR
+            if (exitCode != SUCCESSFUL_RETURN) {
+                throw ProgramResult(exitCode)
+            }
         }
     }
 
@@ -110,10 +193,8 @@ class PWApp : CliktCommand(name = BuildKonfig.applicationName) {
         return "The following command line options are available."
     }
 
-    @OptIn(ExperimentalForeignApi::class)
-    fun generateRunId(): String = memScoped {
+    private fun generateRunId(): String = memScoped {
 
-        @OptIn(ExperimentalForeignApi::class)
         fun formatTimeSafe(tm: tm, millis: Int): String {
             var buffer: Pinned<ByteArray>? = null
             val bsize = 64 // size with some oversize
@@ -164,7 +245,6 @@ class PWApp : CliktCommand(name = BuildKonfig.applicationName) {
         "${timePart}_$randomPart"
     }
 
-    @OptIn(ExperimentalForeignApi::class)
     fun getExecutableDirectory(): String = memScoped {
         // Create max length buffer
         val bufferLength = 32767
@@ -192,7 +272,6 @@ class PWApp : CliktCommand(name = BuildKonfig.applicationName) {
         exeDir
     }
 
-    @OptIn(ExperimentalNativeApi::class, ExperimentalForeignApi::class)
     fun runApp(argv: Array<String>): Int {
         fun internalLogShort(exitCode: Any) {
             val shortMessage = "ErrorCode=$exitCode, the program finished abnormally"
@@ -222,10 +301,12 @@ class PWApp : CliktCommand(name = BuildKonfig.applicationName) {
                         internalLogShort(exitCode)
                     }
                 }
+
                 is PrintMessage, is PrintHelpMessage -> {
                     theApp.currentContext.command.echoFormattedHelp(ex)
                     exitCode = SUCCESSFUL_RETURN
                 }
+
                 is CliktError -> {
                     theApp.currentContext.command.echoFormattedHelp(ex)
                     exitCode = COMMAND_LINE_PARSING_ERROR
@@ -243,11 +324,20 @@ class PWApp : CliktCommand(name = BuildKonfig.applicationName) {
     }
 }
 
-val theApp:PWApp = PWApp()
+val theApp: PWApp = PWApp()
 
 @OptIn(ExperimentalNativeApi::class)
 fun main(args: Array<String>) {
     exitProcess(theApp.versionOption(version = BuildKonfig.version).runApp(args))
+}
+
+@OptIn(ExperimentalForeignApi::class, ExperimentalAtomicApi::class)
+fun ctrlHandler(ctrlType: DWORD): BOOL {
+    if (ctrlType == CTRL_BREAK_EVENT.toUInt()) {
+        theApp.executor.load()?.shouldShutShutdown?.store(true)
+        return TRUE
+    }
+    return FALSE // Continue for other events
 }
 
 @OptIn(ExperimentalContracts::class)
