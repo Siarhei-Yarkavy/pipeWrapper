@@ -69,10 +69,11 @@ Example of a commandline arguments:
 
 `pipeWrapper.exe --lmode INCL --profile AAC_VOLUME --  -1 "out file.m4a"`
 
+CTRL+C is not supported, CTRL+BREAK should work and tell the program to stop as soon as possible
 ### Examples
 Profile data examples are located in `Examples` folder.
 Copy a subfolder to the pipeWrapper executable folder.
 
 ### Return codes
-https://github.com/Siarhei-Yarkavy/pipeWrapper/blob/df28270b0171a8fba5ac62e84b3f147a2c9fc2c9/src/nativeMain/kotlin/org/sergy/pipewrapper/Core.kt#L26
+https://github.com/Siarhei-Yarkavy/pipeWrapper/blob/cf2d416c20c9955dd40a46ad4fc61badfe6bae4d/src/nativeMain/kotlin/org/sergy/pipewrapper/Core.kt#L27
 
