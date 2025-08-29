@@ -16,9 +16,12 @@ Some of us use commandline audio/video/image converters.
 Those tools might have complex command line
 and might be joined in a pipe to route output data from the first tool(producer) to the second tool(consumer).
 Also, such tools are used from third-party GUI applications
-like foobar2000 to convert from certain audio/video/image
-to a different one. All these scenarios have complications
+like foobar2000 to convert from certain audio/video/image formats
+to a different ones. All these scenarios have complications
 in managing command line options and troubleshooting errors.
+<BR>
+For instance, if a producer fails, consumer very often exist with incomplete output file but 0 successful exit code. Parent app is misinformed.
+Pipe Wrapper controls child exit codes and exits with corresponded non zero code to inform the patent application about failure.
 
 ### Solution
 pipeWrapper tool helps here in the following way:
