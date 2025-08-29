@@ -4,9 +4,11 @@ https://github.com/Siarhei-Yarkavy/pipeWrapper
 ## Read this first
 ### Users 
 This tool is indented for experienced users know what is console and pipeline.
-### Limitation
+### Assumptions
+Producer or consumer child tool uses stderr as logging channel. Files, stdin and stdout for data input and output. 
+### Limitations
 * At the moment Windows 10+ is supported.
-* Producer and consumer cannot write stderr to console and log simultaneously.
+* Producer and consumer cannot write theirs stderr to console and log simultaneously.
 
 ## Why pipeWrapper?
 ### Problem
