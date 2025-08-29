@@ -12,18 +12,17 @@ data class ExeLineConfig(
     val params: MutableMap<String, String>
 )
 
-class ExeConfigReader private constructor(profile: String) {
-
-    private val filePath = theApp.getExecutableDirectory() + "\\$profile\\"
+class ExeConfigReader private constructor(private val profile: String) {
 
     private val configMap: Map<Executable, ExeLineConfig> by lazy {
         loadConfig()
     }
 
     @OptIn(ExperimentalForeignApi::class)
-    private fun loadConfig(): MutableMap<Executable, ExeLineConfig> {
-        Logger.get().log("Reading configuration from path \"$filePath\"")
+    private fun loadConfig(): Map<Executable, ExeLineConfig> {
         val mutableConfigMap: MutableMap<Executable, ExeLineConfig> = mutableMapOf()
+        val filePath = theApp.getExecutableDirectory() + "\\$profile\\"
+        Logger.get().log("Reading configuration from path \"$filePath\"")
         for (exe in Executable.entries) {
             val fullConfigPath = filePath + exe.exeName + ".json"
             val jsonString = readFile(fullConfigPath)
@@ -37,14 +36,14 @@ class ExeConfigReader private constructor(profile: String) {
                     throw PWRuntimeException(DESERIALIZATION_JSON_FAILED, cause = e)
                 }
             } else {
-                val msg = "Command line params are not set for executable ${exe.name} !"
+                val msg = "Command line configuration is absent for ${exe.name.uppercase()}!"
                 Logger.get().log(msg)
                 null
             }
             if (exeLineConfig != null) mutableConfigMap[exe] = exeLineConfig
 
         }
-        return mutableConfigMap
+        return mutableConfigMap.toMap()
     }
 
     @OptIn(ExperimentalForeignApi::class)

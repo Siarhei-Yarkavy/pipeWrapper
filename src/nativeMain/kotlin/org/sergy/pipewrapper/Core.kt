@@ -24,10 +24,12 @@ import kotlin.system.exitProcess
 import kotlin.time.Clock
 import kotlin.time.ExperimentalTime
 
+//Return codes
 const val SUCCESSFUL_RETURN: Int = 0
 const val CREATE_PIPE_FAILED: Int = 21
 const val CREATE_MAIN_LOGGER_FAILED: Int = 11
 const val CREATE_EXECUTABLE_LOGGER_FAILED: Int = 14
+const val CREATE_NUL_LOGGER_FAILED: Int = 15
 const val GET_LOGGER_INSTANCE_FAILED: Int = 12
 const val CREATING_RUN_ID_FAILED: Int = 13
 const val DESERIALIZATION_JSON_FAILED: Int = 9
@@ -43,8 +45,9 @@ const val GENERAL_ERROR: Int = 89
 const val EXECUTABLE_STATE_ERROR: Int = 98
 const val AT_LEAST_ONE_CHILD_FAILED: Int = 97
 const val ERROR_SETUP_CONSOLE_STATE: Int = 88
-const val ERROR_WRONG_CONSOLE_TYPE: Int = 82
 const val ERROR_UNKNOWN_CONSOLE_TYPE: Int = 83
+//Constants
+const val NULL_PROFILE_NAME: String = "NUL"
 
 enum class Executable(val exeName: String) {
     PRODUCER("producer"),
@@ -52,8 +55,8 @@ enum class Executable(val exeName: String) {
 }
 
 data class CmdConfig(
+    val runInTextConsole : Boolean,
     val profile: String,
-    val lMode: String?,
     val t: String?,
     val itemsList: List<String>?
 )
@@ -68,13 +71,14 @@ enum class CMDARGS(val paramName: String) {
 class PWApp : CliktCommand(name = BuildKonfig.applicationName) {
 
     val runId: String = generateRunId()
+    private var hNul: CPointer<out CPointed>? = null
 
     @OptIn(ExperimentalAtomicApi::class)
     val executor: AtomicReference<NewExecutor?> = AtomicReference(null)
 
     private val profile by option(
         CMDARGS.PROFILE.paramName,
-        help = "Profile name, required"
+        help = "Profile name, required. Use '$NULL_PROFILE_NAME' to run direct pipe"
     ).required()
 
     private val lMode by option(
@@ -96,47 +100,87 @@ class PWApp : CliktCommand(name = BuildKonfig.applicationName) {
     ).multiple().optional()
 
     override fun run() {
-        val config = CmdConfig(
-            profile = profile,
-            lMode = lMode,
-            t = t,
-            itemsList = items
-        )
-        runLogic(config)
+        runLogic()
     }
 
     @OptIn(ExperimentalTime::class, ExperimentalAtomicApi::class)
-    private fun runLogic(cmdConfig: CmdConfig) {
-
-        Logger.init(cmdConfig.lMode)
+    private fun runLogic() {
+        Logger.init(lMode)
         Logger.get().log("ISO time is ${Clock.System.now()}, we are starting...")
+        Logger.get().log("Helpful WinAPI errors table: " +
+                "https://learn.microsoft.com/en-us/windows/win32/debug/system-error-codes")
 
+        var isTextSession = false
+        val hIn = GetStdHandle(STD_INPUT_HANDLE)
+        if (hIn == INVALID_HANDLE_VALUE) {
+            val message = "Could not get stdin!"
+            Logger.get().log(message)
+            throw PWIllegalStateException(ERROR_SETUP_CONSOLE_STATE, message)
+        }
+
+        val fileType = GetFileType(hIn)
+        when (fileType.toInt()) {
+            FILE_TYPE_CHAR -> {
+                val nulName = "NUL"
+                hNul = CreateFileW(
+                    nulName,
+                    GENERIC_READ,
+                    FILE_SHARE_READ.toUInt(),
+                    null,
+                    OPEN_EXISTING.toUInt(),
+                    FILE_ATTRIBUTE_NORMAL.toUInt(),
+                    null
+                )
+
+                if (hNul == INVALID_HANDLE_VALUE) {
+                    val message = "Could not open NUL device!"
+                    Logger.get().log(message)
+                    throw PWIllegalStateException(ERROR_SETUP_CONSOLE_STATE, message)
+                }
+
+                // Set new handler for stdin for Windows API
+                val result = SetStdHandle(STD_INPUT_HANDLE, hNul)
+                if (result == 0) {
+                    val err = GetLastError()
+                    val message = "SetStdHandle failed with winAPI error code=$err!"
+                    Logger.get().log(message)
+                    throw PWIllegalStateException(ERROR_SETUP_CONSOLE_STATE, message)
+                }
+
+                // Reroute CRT stdin (scanf/getchar etc.) to "NUL".
+                // Use freopen: this replaces FILE* stdin to NUL.
+                val reopened = freopen(nulName, "r", stdin)
+                if (reopened == null) {
+                    val err = GetLastError()
+                    val message = "Failed to attach stdin to NUL with winAPI error code=$err!"
+                    Logger.get().log(message)
+                    // Do not close hNul here — SetStdHandle already connects it.
+                    throw PWIllegalStateException(ERROR_SETUP_CONSOLE_STATE, message)
+                }
+                isTextSession = true
+                Logger.get().log(
+                    "\n\n[!] ${commandName.uppercase()} runs in text terminal mode " +
+                            "and expects binary pipe data exchange only. " +
+                            "${commandName.uppercase()} prevents reading from stdin in this mode " +
+                            "for this app and children. " +
+                            "${commandName.uppercase()} stdin successfully redirected to NUL.\n\n"
+                )
+            }
+
+            FILE_TYPE_DISK, FILE_TYPE_PIPE -> Unit
+            else -> {
+                Logger.get().log("[!] Unknown type of stdin type: $fileType")
+                throw ProgramResult(ERROR_UNKNOWN_CONSOLE_TYPE)
+            }
+        }
+        val config = CmdConfig(
+            runInTextConsole = isTextSession,
+            profile = profile,
+            t = t,
+            itemsList = items
+        )
         memScoped {
-            val hIn = GetStdHandle(STD_INPUT_HANDLE)
-            if (hIn == INVALID_HANDLE_VALUE) {
-                val message = "Could not get stdin!"
-                Logger.get().log(message)
-                throw PWIllegalStateException(ERROR_SETUP_CONSOLE_STATE, message)
-            }
-
-            val fileType = GetFileType(hIn)
-            when (fileType.toInt()) {
-                FILE_TYPE_CHAR -> {
-                    Logger.get().log("[!] stdin connected to text console")
-                    Logger.get().log("[!] $commandName.exe expects binary data")
-                    Logger.get().log("[!] use in cmd \"$commandName [args] < input.wav\"")
-                    Logger.get().log(
-                        "[!] or use in pwsh \"Get-Content input.wav -AsByteStream | & .\\$commandName [args]\'")
-                    throw ProgramResult(ERROR_WRONG_CONSOLE_TYPE)
-                }
-                FILE_TYPE_DISK, FILE_TYPE_PIPE -> Unit
-                else -> {
-                    Logger.get().log("[!] Unknown type of stdin type: $fileType")
-                    throw ProgramResult(ERROR_UNKNOWN_CONSOLE_TYPE)
-                }
-            }
-
-            executor.store(NewExecutor(cmdConfig, this))
+            executor.store(NewExecutor(config, this))
 
             val hConsole = CreateFileW(
                 "CONIN$",
@@ -187,6 +231,7 @@ class PWApp : CliktCommand(name = BuildKonfig.applicationName) {
 
     private fun cleanUp() {
         Logger.safeGet().close()
+        hNul?.let {CloseHandle(it)}
     }
 
     override fun help(context: Context): String {

@@ -13,22 +13,34 @@ interface ILogger {
 }
 
 @OptIn(ExperimentalForeignApi::class)
+object BootstrapLogger: ILogger {
+    override fun log(message: String) {
+        fputs("Warning! Logger is not available. Fallback to console stderr: $message",
+            stderr)
+    }
+    override fun close() {
+        // stub
+    }
+}
+
+@OptIn(ExperimentalForeignApi::class)
 class Logger private constructor(private val mode: LMODE): ILogger  {
 
     enum class LMODE {
         //Logging mode
-        INCL, FILE, CON, SIL
+        INCL, FILE, CON, SIL, NUL
     }
 
-    private var file: CPointer<FILE>? = null
+    private var mainLogFile: CPointer<FILE>? = null
+    private var nulHandle: CPointer<out CPointed>? = null
     private val appLogHandles =
         mutableMapOf<Executable, CPointer<out CPointed>?>()
 
     init {
         val runId = theApp.runId
         if (isFileLogging()) {
-            file = fopen("${runId}-${theApp.commandName}.log", "w")
-            if (file == null) {
+            mainLogFile = fopen("${runId}-${theApp.commandName}.log", "w")
+            if (mainLogFile == null) {
                 perror("Failed to open main log file")
                 throw PWIllegalStateException(CREATE_MAIN_LOGGER_FAILED)
             }
@@ -57,6 +69,29 @@ class Logger private constructor(private val mode: LMODE): ILogger  {
                     appLogHandles[exe] = logHandle
                 }
             }
+        } else if (isNulLogging()) {
+            memScoped {
+                val sa = cValue<SECURITY_ATTRIBUTES> {
+                    nLength = sizeOf<SECURITY_ATTRIBUTES>().toUInt()
+                    lpSecurityDescriptor = null
+                    bInheritHandle = TRUE
+                }
+                nulHandle = CreateFileW(
+                    "NUL",
+                    GENERIC_WRITE.toUInt(),
+                    FILE_SHARE_READ.toUInt() or FILE_SHARE_WRITE.toUInt(),
+                    sa.getPointer(this),
+                    OPEN_EXISTING.toUInt(),
+                    FILE_ATTRIBUTE_NORMAL.toUInt(),
+                    null
+                )
+                if (nulHandle == null || nulHandle == INVALID_HANDLE_VALUE) {
+                    throw PWIllegalStateException(
+                        CREATE_NUL_LOGGER_FAILED,
+                        "Failed to open NUL for child stdin, WinAPI error=${GetLastError()}"
+                    )
+                }
+            }
         }
     }
 
@@ -81,26 +116,13 @@ class Logger private constructor(private val mode: LMODE): ILogger  {
                 instance
             }
 
-        fun safeGet(): ILogger =
-            if (!isInitialized()) {
-                object : ILogger {
-                    override fun log(message: String) {
-                        fputs("Warning! Logger is not available. Fallback to console stderr: $message",
-                            stderr)
-                    }
-                    override fun close() {
-                        // stub
-                    }
-                }
-            } else {
-                instance
-            }
+        fun safeGet(): ILogger = if (!isInitialized()) BootstrapLogger else instance
 
         private fun isInitialized() = this::instance.isInitialized
     }
 
     override fun log(message: String) {
-        if (LMODE.SIL == mode) return
+        if (isNoPWLogging()) return
         memScoped {
             val rawTime = alloc<time_tVar>().apply {
                 value = time(null)  // Save to variable
@@ -117,7 +139,7 @@ class Logger private constructor(private val mode: LMODE): ILogger  {
 
             val format = "[pW %04d-%02d-%02d %02d:%02d:%02d] %s\n"
             if (isFileLogging()) {
-                file?.let {
+                mainLogFile?.let {
                     fprintf(
                         it, format,
                         //cannot spread here due to native code
@@ -150,20 +172,23 @@ class Logger private constructor(private val mode: LMODE): ILogger  {
         }
     }
 
-    private fun isFileLogging(): Boolean {
-        return (mode in arrayOf(LMODE.INCL, LMODE.FILE))
-    }
+    private fun isFileLogging() = mode in arrayOf(LMODE.INCL, LMODE.FILE)
 
-    private fun isConsoleLogging(): Boolean {
-        return (mode in arrayOf(LMODE.INCL, LMODE.CON))
-    }
+    private fun isConsoleLogging() = mode in arrayOf(LMODE.INCL, LMODE.CON)
+
+    private fun isNulLogging() = mode == LMODE.NUL
+
+    private fun isNoPWLogging() = mode in arrayOf(LMODE.SIL, LMODE.NUL)
 
     override fun getExeErrorLoggingHandle(exe: Executable): CPointer<out CPointed>? =
-        if (isFileLogging()) appLogHandles[exe] else GetStdHandle(STD_ERROR_HANDLE)
+        if (isFileLogging()) appLogHandles[exe]
+            else if (isNulLogging()) nulHandle
+            else GetStdHandle(STD_ERROR_HANDLE)
 
     override fun close() {
         log("Closing the logger")
-        file?.let { fclose(it) }
+        mainLogFile?.let { fclose(it) }
+        nulHandle?.let { CloseHandle(it) }
         for (handle in appLogHandles.values) {
             handle?.let { CloseHandle(it) }
         }

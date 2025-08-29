@@ -3,6 +3,7 @@ package org.sergy.pipewrapper
 import kotlinx.cinterop.*
 import org.sergy.pipewrapper.exception.PWIllegalStateException
 import org.sergy.pipewrapper.exception.PWRuntimeException
+import platform.posix.stdin
 import platform.windows.*
 import kotlin.concurrent.atomics.AtomicBoolean
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
@@ -28,16 +29,115 @@ class NewExecutor {
     private val appProcessData = mutableMapOf<Executable, ProcessData>()
 
     constructor(cmdConfig: CmdConfig, pScope: MemScope) {
+
+        fun provideChildStdInput() : CPointer<out CPointed>? {
+            return if (cmdConfig.runInTextConsole) {
+                //We should force shutdown the children
+                val saAttr = scope.alloc<SECURITY_ATTRIBUTES>().apply {
+                    nLength = sizeOf<SECURITY_ATTRIBUTES>().toUInt()
+                    bInheritHandle = TRUE
+                    lpSecurityDescriptor = null
+                }
+
+                // 1. Create anonymous pipe
+                val hNReadPipe = scope.alloc<HANDLEVar>()
+                val hNWritePipe = scope.alloc<HANDLEVar>()
+                try {
+                    if (CreatePipe(
+                            hNReadPipe.ptr,
+                            hNWritePipe.ptr,
+                            saAttr.ptr,
+                            0U //system default size
+                        ) == 0
+                    ) {
+                        val errorMessage = "Create pipe failed! WinAPI error code=${GetLastError()}"
+                        Logger.get().log(errorMessage)
+                        throw PWRuntimeException(CREATE_PIPE_FAILED, errorMessage)
+                    }
+                    //this ugly hack we have because apps like qaac.exe don't react to NUL or closed pipe
+                    val data = byteArrayOf(0x0)
+                    val bytesWritten = scope.alloc<DWORDVar>()
+                    data.usePinned { pinned ->
+                        val success = WriteFile(
+                            hNWritePipe.value,
+                            pinned.addressOf(0),
+                            data.size.toUInt(),
+                            bytesWritten.ptr,
+                            null
+                        )
+                        if (success == 0) {
+                            Logger.get().log("Failed to send zero bytes to child stdin, " +
+                                    "winAPI error code=${GetLastError()}")
+                        } else {
+                            Logger.get().log(
+                                "Sent ${bytesWritten.value} zero bytes into child app stdin to " +
+                                        "'break' it and force shutdown"
+                            )
+                        }
+                    }
+                } finally {
+                    CloseHandle(hNWritePipe.value)
+                }
+                hNReadPipe.value
+            } else {
+                GetStdHandle(STD_INPUT_HANDLE)
+            }
+        }
+
+        fun getCmdStringFromConfig(app: Executable, cmdConfig: CmdConfig): String {
+            val exeConfigReader = ExeConfigReader.get()
+            val exeLineConfig = exeConfigReader.getConfig(app)
+            val builder = StringBuilder(exeLineConfig.path)
+            for (paramsEntry in exeLineConfig.params) {
+                builder.append(" ").append(paramsEntry.key)
+                if (paramsEntry.value.isNotEmpty()) {
+                    builder.append(" ")
+                    var paramValue: String = paramsEntry.value
+                    cmdConfig.itemsList?.forEachIndexed { index, arg ->
+                        paramValue = paramValue.replace("%${index + 1}", arg)
+                    }
+                    builder.append(paramValue)
+                }
+            }
+            return builder.toString()
+        }
+
         try {
-            ExeConfigReader.install(cmdConfig.profile)
             this.scope = pScope
             actualTimeOut =  cmdConfig.t?.toIntOrNull() ?: DEFAULT_TIMEOUT
-            if (!ExeConfigReader.get().configExists(Executable.CONSUMER)) {
-                throw PWIllegalStateException(
-                    CONFIGURATION_CONSUMER_ABSENT, "Consumer configuration is mandatory!"
-                )
+            var producerCmdString: String? = null
+            var consumerCmdString: String
+
+            if(cmdConfig.profile == NULL_PROFILE_NAME) {
+                if (cmdConfig.itemsList == null ||
+                    cmdConfig.itemsList.size != 2) {
+                    throw PWIllegalStateException(3333,"'NUL' profile requires two cmd line " +
+                            "arguments!")
+                }
+                pipeMode = true
+                producerCmdString = cmdConfig.itemsList[0].ifEmpty {
+                    throw PWIllegalStateException(
+                        PRODUCER_CREATION_FAILED,
+                        "Empty producer cmd line argument argument!")
+                }
+                consumerCmdString = cmdConfig.itemsList[1].ifEmpty {
+                    throw PWIllegalStateException(
+                        CONSUMER_CREATION_FAILED,
+                        "Empty producer cmd line argument argument!")
+                }
+            } else {
+                ExeConfigReader.install(cmdConfig.profile)
+                if (!ExeConfigReader.get().configExists(Executable.CONSUMER)) {
+                    throw PWIllegalStateException(
+                      CONFIGURATION_CONSUMER_ABSENT, "Consumer configuration is mandatory!"
+                   )
+                }
+                pipeMode = ExeConfigReader.get().configExists(Executable.PRODUCER)
+                if (pipeMode) {
+                    producerCmdString = getCmdStringFromConfig(Executable.PRODUCER, cmdConfig)
+                }
+                consumerCmdString = getCmdStringFromConfig(Executable.CONSUMER, cmdConfig)
             }
-            pipeMode = ExeConfigReader.get().configExists(Executable.PRODUCER)
 
             if (pipeMode) {
                 val saAttr = scope.alloc<SECURITY_ATTRIBUTES>().apply {
@@ -65,14 +165,14 @@ class NewExecutor {
                 val producerSiStartInfo = scope.alloc<STARTUPINFOW>().apply { initStartupInfo() }
 
                 producerSiStartInfo.apply {
-                    hStdInput = GetStdHandle(STD_INPUT_HANDLE)
+                    hStdInput = provideChildStdInput()
                     hStdError = Logger.get().getExeErrorLoggingHandle(Executable.PRODUCER)
                     // Reroute producer output to pipe
                     hStdOutput = hWritePipe.value
                 }
-                val producerCmdString = getCmdString(Executable.PRODUCER, cmdConfig)
+
                 appProcessData[Executable.PRODUCER] =
-                    ProcessData(producerCmdString, producerPiProcInfo, producerSiStartInfo)
+                    ProcessData(producerCmdString!!, producerPiProcInfo, producerSiStartInfo)
 
             }
 
@@ -80,13 +180,12 @@ class NewExecutor {
             val consumerSiStartInfo = scope.alloc<STARTUPINFOW>().apply { initStartupInfo() }
 
             consumerSiStartInfo.apply {
-                dwFlags = STARTF_USESTDHANDLES.toUInt()
-                hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE)
-                hStdError = Logger.get().getExeErrorLoggingHandle(Executable.CONSUMER)
                 // in pipe mode we are getting data from pipe, else - inherited stdin
-                hStdInput = if (pipeMode) hReadPipe.value else GetStdHandle(STD_INPUT_HANDLE)
+                hStdInput = if (pipeMode) hReadPipe.value else provideChildStdInput()
+                hStdError = Logger.get().getExeErrorLoggingHandle(Executable.CONSUMER)
+                hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE)
             }
-            val consumerCmdString = getCmdString(Executable.CONSUMER, cmdConfig)
+
             appProcessData[Executable.CONSUMER] =
                 ProcessData(consumerCmdString, consumerPiProcInfo, consumerSiStartInfo)
         } catch (th : Throwable) {
@@ -103,7 +202,7 @@ class NewExecutor {
             if (pipeMode) {
                 val fullProducerCmd =
                     appProcessData[Executable.PRODUCER]!!.cmdLine.wcstr.getPointer(scope)
-                Logger.get().log("Producer cmd = ${fullProducerCmd.toKString()}")
+                Logger.get().log("\nProducer cmd = ${fullProducerCmd.toKString()}")
 
                 if (CreateProcessW(
                         null,
@@ -118,7 +217,7 @@ class NewExecutor {
                         appProcessData[Executable.PRODUCER]!!.piProcInfo.ptr
                     ) == 0
                 ) {
-                    val message = "Create producer Failed! ${GetLastError()}"
+                    val message = "Create producer Failed! WinAPI error code=${GetLastError()}"
                     Logger.get().log(message)
                     safeCloseHandle(hWritePipe)
                     safeCloseHandle(hReadPipe)
@@ -126,13 +225,14 @@ class NewExecutor {
                 }
 
                 val prodPid = appProcessData[Executable.PRODUCER]!!.piProcInfo.dwProcessId
-                Logger.get().log("Producer process created. PID=$prodPid")
+                Logger.get().log("PRODUCER created. PID=$prodPid")
+                safeCloseSiStdinHandle(appProcessData[Executable.PRODUCER]!!.siStartInfo)
                 //We created process so could close handle on wrapper side
                 safeCloseHandle(hWritePipe)
             }
 
             val fullConsumerCmd = appProcessData[Executable.CONSUMER]!!.cmdLine.wcstr.getPointer(scope)
-            Logger.get().log("Consumer cmd = ${fullConsumerCmd.toKString()}")
+            Logger.get().log("\nConsumer cmd = ${fullConsumerCmd.toKString()}")
             if (CreateProcessW(
                     null,
                     fullConsumerCmd,
@@ -146,7 +246,7 @@ class NewExecutor {
                     appProcessData[Executable.CONSUMER]!!.piProcInfo.ptr
                 ) == 0
             ) {
-                val message = "Create Consumer Failed! ${GetLastError()}}"
+                val message = "Create CONSUMER Failed! WinAPI error code=${GetLastError()}}"
                 Logger.get().log(message)
                 if (pipeMode) {
                     safeCloseHandle(hWritePipe)
@@ -155,19 +255,17 @@ class NewExecutor {
                 }
                 throw PWRuntimeException(CONSUMER_CREATION_FAILED, message)
             }
+            //CloseHandle(appProcessData[Executable.CONSUMER]!!.siStartInfo.hStdInput)
             val consumerPid = appProcessData[Executable.CONSUMER]!!.piProcInfo.dwProcessId
-            Logger.get().log("Consumer process created. PID=$consumerPid")
+            Logger.get().log("CONSUMER created. PID=$consumerPid")
 
             //now checking if consumer failed? fast after start, producer might be in hung state this case
             val consumerFailedOrFinishedFast = isProcessTerminated(Executable.CONSUMER, 3000)
-            Logger.get().log("Detected consumer state as " +
-                    if (consumerFailedOrFinishedFast) "dead (It wasn't necessarily due to an error)" else "alive"
-            )
 
             var producerExitCode: Int? = null
             val initialShutdownValue: Boolean = consumerFailedOrFinishedFast
                     || !isPipeInitializedOrUnknown(appProcessData[Executable.CONSUMER]!!.siStartInfo.hStdInput)
-
+            safeCloseSiStdinHandle(appProcessData[Executable.CONSUMER]!!.siStartInfo)
             //As consumer was able to start closing our end of pipe
             if (pipeMode) safeCloseHandle(hReadPipe)
 
@@ -175,10 +273,17 @@ class NewExecutor {
             val throttleTime = 5 //in seconds
             val receivedShouldShutdown = shouldShutShutdown.compareAndExchange(false,
                     initialShutdownValue)
-            Logger.get().log("Timeout to finish operation is $actualTimeOut seconds")
+            val infiniteTimeoutValue = 0
+            Logger.get().log("Timeout to finish operation is " +
+                    if (actualTimeOut == infiniteTimeoutValue) "not set" else "$actualTimeOut seconds")
 
-            while (passedSeconds < actualTimeOut && !shouldShutShutdown.load()) {
-                if (isProcessTerminated(Executable.CONSUMER, throttleTime * 1000)) break
+            while (actualTimeOut == infiniteTimeoutValue ||
+                passedSeconds < actualTimeOut && !shouldShutShutdown.load()) {
+                if (isProcessTerminated(Executable.CONSUMER, throttleTime *
+                            if (pipeMode) 500 else 1000)) break
+                if (pipeMode) {
+                    if (isProcessTerminated(Executable.PRODUCER, throttleTime * 500)) break
+                }
                 passedSeconds = passedSeconds.plus(throttleTime)
                 val secInMin = 60
                 if (passedSeconds % secInMin == 0) {
@@ -193,7 +298,7 @@ class NewExecutor {
                 producerExitCode = requestProcessTermination(Executable.PRODUCER, 1000)
             }
 
-            val consumerExitCode = requestProcessTermination(Executable.CONSUMER, 1000)
+            val consumerExitCode = requestProcessTermination(Executable.CONSUMER, 5000)
 
             val producerTerminated = producerExitCode == CHILD_PROCESS_WAS_KILLED
             val consumerTerminated = consumerExitCode == CHILD_PROCESS_WAS_KILLED
@@ -216,32 +321,16 @@ class NewExecutor {
         }
     }
 
-    private fun getCmdString(app: Executable, cmdConfig: CmdConfig): String {
-        val exeConfigReader = ExeConfigReader.get()
-        val exeLineConfig = exeConfigReader.getConfig(app)
-        val builder = StringBuilder(exeLineConfig.path)
-        for (paramsEntry in exeLineConfig.params) {
-            builder.append(" ").append(paramsEntry.key)
-            if (paramsEntry.value.isNotEmpty()) {
-                builder.append(" ")
-                var paramValue: String = paramsEntry.value
-                cmdConfig.itemsList?.forEachIndexed { index, arg ->
-                    val oldValue = paramValue
-                    paramValue = paramValue.replace("%${index + 1}", arg)
-                    if (!oldValue.equals(paramValue)) {
-                        Logger.get().log("Replaced '%${index + 1}' in '${paramsEntry.value}' with '$paramValue'")
-                    }
-                }
-                builder.append(paramValue)
-            }
-        }
-        return builder.toString()
-    }
-
     private fun safeCloseHandle(handle: HANDLEVar?) {
         handle?.value = handle.value?.takeIf { it != INVALID_HANDLE_VALUE }.let {
                     CloseHandle(it); INVALID_HANDLE_VALUE
                 }
+    }
+
+    private fun safeCloseSiStdinHandle(si: STARTUPINFOW?) {
+        si?.run {
+            CloseHandle(stdin?.takeIf { it != INVALID_HANDLE_VALUE })
+        }
     }
 
     private fun safeCloseHandle(pi: PROCESS_INFORMATION?) {
@@ -271,14 +360,14 @@ class NewExecutor {
             ) {
                 Logger.get().log("Process termination of ${exe.exeName}  was failed: ${GetLastError()}")
             } else {
-                Logger.get().log("Process ${exe.exeName} forcibly terminated")
+                Logger.get().log("${exe.exeName.uppercase()} forcibly terminated")
             }
         } else if (waitResult == WAIT_OBJECT_0) {
-            Logger.get().log("Process ${exe.exeName} exited gracefully")
+            Logger.get().log("${exe.exeName.uppercase()} exited gracefully")
         } else {
             throw PWIllegalStateException(
                 EXECUTABLE_STATE_ERROR,
-                "Unknown state of executable ${exe.exeName}"
+                "Unexpected state of executable ${exe.exeName.uppercase()}"
             )
         }
 
@@ -289,7 +378,7 @@ class NewExecutor {
         )
         val unsignedValue: UInt = appExitCodeMem.value
         val signedValue: Int = unsignedValue.toInt()
-        Logger.get().log("Executable ${exe.exeName} exit code $signedValue")
+        Logger.get().log("${exe.exeName.uppercase()} exit code $signedValue")
 
         safeCloseHandle(appProcessData[exe]!!.piProcInfo)
         return signedValue
@@ -302,17 +391,21 @@ class NewExecutor {
     private fun isPipeInitializedOrUnknown(handle: HANDLE?): Boolean {
         val waitResult = WaitForSingleObject(handle, 1000u)
 
-        if (waitResult == WAIT_TIMEOUT.toUInt()) {
-            Logger.get().log("Data handle is not initialized, is it stuck? terminating EXEs")
-            return false
-        } else if (waitResult == WAIT_OBJECT_0) {
-            Logger.get().log("Data handle initialized")
-            return true
-        } else if (waitResult == WAIT_FAILED) {
-            Logger.get().log("Data handle looks invalid, however we continue")
-            return true
+        when (waitResult) {
+            WAIT_TIMEOUT.toUInt() -> {
+                Logger.get().log("Data handle is not initialized, is it stuck? Will terminate EXEs")
+                return false
+            }
+            WAIT_OBJECT_0 -> {
+                Logger.get().log("Data handle initialized")
+                return true
+            }
+            WAIT_FAILED -> {
+                Logger.get().log("Data handle looks invalid, stopping")
+                return false
+            }
+            else -> return false
         }
-        return false
 
     }
 
@@ -335,6 +428,7 @@ class NewExecutor {
             safeCloseHandle(hWritePipe)
         }
         for (exe in Executable.entries) {
+            safeCloseSiStdinHandle(appProcessData[exe]?.siStartInfo)
             safeCloseHandle(appProcessData[exe]?.piProcInfo)
         }
     }
