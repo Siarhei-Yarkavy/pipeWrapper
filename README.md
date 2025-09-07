@@ -49,7 +49,7 @@ A[pipeWrapper stdin] --> B[Consumer output to pipeWrapper stdout or a FS file]
 ```
 ### Basic concepts
 * **Profile.**<br>
-    A named directory in **the same folder where pipeWrapper is located**
+    A named directory in **the same folder where pipeWrapper is located**.
     Profile has `consumer.json` and `producer.json` files with command line parameters
     and optional placeholders `%1`, `%2` etc. that are replaced with passed command line arguments.
 
