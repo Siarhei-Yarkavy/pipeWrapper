@@ -21,14 +21,18 @@ For example, if the producer fails, the consumer often exits with a zero (succes
 PipeWrapper addresses this issue by monitoring child process exit codes and ensuring the pipeWrapper itself exits with an appropriate non-zero code, thereby correctly informing the parent application of any failure. 
 
 ### Solution
-PipeWrapper tool helps here in the following way:
-* Use stored profiles for consumer/producer pairs
-and keep theirs command line options in the profiles to manage tools and command lines easily.
-* is able to work with consumer only and use consumer profiles only.
-It works as pipeWrapper passes own stdin to consumer stdin.
-* Capture all stderr from pipeWrapper, producer and consumer 
-to log files for easy troubleshooting if something is going wrong.
-* Support passing command line arguments for producer and consumer that could be used as placeholders values.
+profile
+Qwen3-Max-Preview 4:18 pm
+
+Вот грамматически правильный, стилистически улучшенный и профессионально оформленный вариант вашего текста: 
+ 
+
+The PipeWrapper tool helps address these challenges in the following ways: 
+* Profile Management: Store predefined profiles for producer/consumer pairs, including their command-line options — making it easy to manage and reuse complex tool configurations.
+* Consumer-Only Mode: PipeWrapper can operate with a consumer only, using consumer-specific profiles. In this mode, it forwards its own standard input (stdin) directly to the consumer’s stdin.
+* Comprehensive Logging: Capture all stderr output — from PipeWrapper itself, the producer, and the consumer — into log files for easy troubleshooting when something goes wrong.
+* Dynamic Argument Substitution: Support passing command-line arguments to both producer and consumer, with placeholder values that can be dynamically replaced at runtime.
+     
 
 ## How to use
 
