@@ -21,12 +21,6 @@ For example, if the producer fails, the consumer often exits with a zero (succes
 PipeWrapper addresses this issue by monitoring child process exit codes and ensuring the pipeWrapper itself exits with an appropriate non-zero code, thereby correctly informing the parent application of any failure. 
 
 ### Solution
-profile
-Qwen3-Max-Preview 4:18 pm
-
-Вот грамматически правильный, стилистически улучшенный и профессионально оформленный вариант вашего текста: 
- 
-
 The PipeWrapper tool helps address these challenges in the following ways: 
 * Profile Management: Store predefined profiles for producer/consumer pairs, including their command-line options — making it easy to manage and reuse complex tool configurations.
 * Consumer-Only Mode: PipeWrapper can operate with a consumer only, using consumer-specific profiles. In this mode, it forwards its own standard input (stdin) directly to the consumer’s stdin.
