@@ -12,19 +12,13 @@ Producer or consumer child tool process uses stderr as logging channel. Files, s
 * CTRL+C is not supported, CTRL+BREAK should work and tell pipeWrapper to kill 'children' and stop as soon as possible.
 
 ## Why pipeWrapper?
-### Problem
-Some of us use commandline audio/video/image converters. 
-Those tools might have complex command line
-and might be joined in a pipe to route output data from the first tool(producer) to the second tool(consumer).
-Also, such tools are used from third-party GUI applications
-like foobar2000 to convert from certain audio/video/image formats
-to a different ones. All these scenarios have complications
-in managing command line options and troubleshooting errors.
-<BR>
-For instance, if a producer fails, consumer very often exist with incomplete output file but 0 successful exit code.
-Parent app is misinformed.
-Pipe Wrapper controls child process exit codes and exits with corresponded non-zero code
-to inform the patent application about failure.
+Some of us use command-line tools to convert audio, video, or image files. These tools often have complex command-line interfaces and may be chained together in a pipeline, where the output of one tool (the producer) is passed as input to another (the consumer). They are also frequently invoked by third-party GUI applications — such as foobar2000 — to convert files from one format to another. 
+
+All these scenarios introduce challenges in managing command-line options and troubleshooting errors. 
+
+For example, if the producer fails, the consumer often exits with a zero (successful) exit code — even though it may have produced an incomplete or corrupted output file. This misleads the parent application into believing the operation succeeded.  
+
+PipeWrapper addresses this issue by monitoring child process exit codes and ensuring the pipeWrapper itself exits with an appropriate non-zero code, thereby correctly informing the parent application of any failure. 
 
 ### Solution
 PipeWrapper tool helps here in the following way:
