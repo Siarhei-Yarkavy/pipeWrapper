@@ -63,7 +63,7 @@ A[pipeWrapper stdin] --> B[Consumer output to pipeWrapper stdout or a FS file]
   * Both console and file mode (inclusive mode).
   <br><br>
 * **Run id**.<br>
-    An "unique" id of the current execution and is part of log files name.
+    An "unique" id of the current execution that is part of log files name.
     Allows you to correlate log files with a specific launch.
     <br><br>
 * **Timeout**.<br>
