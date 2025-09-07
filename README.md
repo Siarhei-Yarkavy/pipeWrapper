@@ -37,8 +37,9 @@ To understand pipeWrapper tool usage it is good to understand how data flow insi
 Simplified flow diagram:
 ```mermaid
 flowchart LR
-A[pipeWrapper stdin] --> B[Producer pipe write end]
---> C[Consumer pipe read end] --> D[Consumer output to pipeWrapper stdout or a FS file]
+A[pipeWrapper stdin] --> B["Producer could read data from stdin or a file"]
+--> C["Producer pipe write end."]
+--> D[Consumer pipe read end] --> E[Consumer output to pipeWrapper stdout or a FS file]
 ```
 
 #### Consumer is used only
