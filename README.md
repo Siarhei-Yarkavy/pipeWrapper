@@ -63,12 +63,12 @@ A[pipeWrapper stdin] --> B[Consumer output to pipeWrapper stdout or a FS file]
 
     **Absence of `producer.json` is considered as consumer only mode.**
     <br><br>
-* **Logging modes**.
+* **Logging mode**.
   * Nul mode when all logs from PipeWrapper and 'children' stderr are redirected to nul (recommended for "production").
   * Silent mode without any logging from PipeWrapper but logging from 'children' is captured.
-  * Console only logging (not useful when running from third-party tools).
-  * File(s) only. Logs are saved to current working directory (Possible for "production").
-  * Both console and file(s) mode (inclusive mode).
+  * Console only mode (not useful when running from third-party tools).
+  * File only mode. Logs are saved to current working directory (Possible for "production").
+  * Both console and file mode (inclusive mode).
   <br><br>
 * **Run id**.<br>
     An "unique" id of the current execution and is part of log files name.
@@ -90,7 +90,7 @@ Use `NUL` as profile name to run direct pipe without stored configuration.
 This case producer and consumer commandline strings must be provided as pipeWrapper arguments.
 
 `--lmode=(INCL|FILE|CON|SIL|NUL)`<BR>
-Logger mode in one of INCL, FILE, CON, SIL, NUL, default is SIL
+Logger mode in one of INCL, FILE, CON, SIL, NUL, default is `SIL`
 
 `--t=<timeout>`<BR>
 Timeout in seconds before force terminating 'children' processes, **default is `300`**
@@ -113,5 +113,5 @@ Profile data examples are located in `Examples` folder.
 Copy a subfolder to the pipeWrapper executable folder.
 
 ### Return codes
-https://github.com/Siarhei-Yarkavy/pipeWrapper/blob/cf2d416c20c9955dd40a46ad4fc61badfe6bae4d/src/nativeMain/kotlin/org/sergy/pipewrapper/Core.kt#L27
+https://github.com/Siarhei-Yarkavy/pipeWrapper/blob/529da9cdc046c8ebfdd28335a5faa9eb977ad6c2/src/nativeMain/kotlin/org/sergy/pipewrapper/Core.kt#L26
 
