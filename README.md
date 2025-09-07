@@ -87,7 +87,7 @@ Logger mode in one of INCL, FILE, CON, SIL, NUL, default is `SIL`
 `--t=<timeout>`<BR>
 Timeout in seconds before force terminating 'children' processes, **default is `300`**
 <BR><BR>
-To avoid collision put `--` before profile placeholders arguments and put them after options.
+To avoid collision put `--` before profile config files placeholders arguments and put them after options.
 
 #### Examples of a commandline arguments:
 
