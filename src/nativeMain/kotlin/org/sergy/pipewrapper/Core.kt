@@ -4,9 +4,7 @@ import com.github.ajalt.clikt.core.*
 import com.github.ajalt.clikt.parameters.arguments.argument
 import com.github.ajalt.clikt.parameters.arguments.multiple
 import com.github.ajalt.clikt.parameters.arguments.optional
-import com.github.ajalt.clikt.parameters.options.option
-import com.github.ajalt.clikt.parameters.options.required
-import com.github.ajalt.clikt.parameters.options.versionOption
+import com.github.ajalt.clikt.parameters.options.*
 import com.github.ajalt.clikt.parameters.types.choice
 import kotlinx.cinterop.*
 import org.sergy.pipewrapper.exception.ErrorCodeAware
@@ -48,6 +46,9 @@ const val ERROR_SETUP_CONSOLE_STATE: Int = 88
 const val ERROR_UNKNOWN_CONSOLE_TYPE: Int = 83
 //Constants
 const val NULL_PROFILE_NAME: String = "NUL"
+private const val NOT_EMPTY_MESSAGE = "Must be not empty if provided"
+private const val WRONG_PARAM_VALUE_MESSAGE1 = "Param value '"
+private const val WRONG_PARAM_VALUE_MESSAGE2 = "' looks invalid"
 
 enum class Executable(val exeName: String) {
     PRODUCER("producer"),
@@ -62,6 +63,7 @@ data class CmdConfig(
 )
 
 enum class CMDARGS(val paramName: String) {
+    RUNID("--runid"),
     PROFILE("--profile"),
     LMODE("--lmode"),
     TIMEOUT("--t")
@@ -70,26 +72,49 @@ enum class CMDARGS(val paramName: String) {
 @OptIn(ExperimentalForeignApi::class)
 class PWApp : CliktCommand(name = BuildKonfig.applicationName) {
 
-    val runId: String = generateRunId()
+    lateinit var runId: String
     private var hNul: CPointer<out CPointed>? = null
+
+    private fun OptionTransformContext.containOptionNames(optionValue: String) {
+        if (optionValue.isEmpty()) {
+            fail(NOT_EMPTY_MESSAGE)
+        }
+        val words = optionValue.split("\\s+".toRegex())
+        if (optionValue == "--" || !CMDARGS.entries.none { entry ->
+            words.any { it.equals(entry.paramName, ignoreCase = true) }
+        }) {
+            fail(WRONG_PARAM_VALUE_MESSAGE1 + optionValue + WRONG_PARAM_VALUE_MESSAGE2)
+        }
+    }
 
     @OptIn(ExperimentalAtomicApi::class)
     val executor: AtomicReference<NewExecutor?> = AtomicReference(null)
 
+    private val runidOpt by option(
+        CMDARGS.RUNID.paramName,
+        metavar = "execution id",
+        help = "Custom id for current $commandName execution, used as part of log file names"
+    ).default(generateRunId()).validate { containOptionNames(it)}
+
     private val profile by option(
         CMDARGS.PROFILE.paramName,
+        metavar = "profile dir",
         help = "Profile name, required. Use '$NULL_PROFILE_NAME' to run direct pipe"
-    ).required()
+    ).required().validate { containOptionNames(it)}
+
 
     private val lMode by option(
         CMDARGS.LMODE.paramName,
+        //metavar = "logging mode",
         help = "logger mode in one of " + Logger.LMODE.entries.joinToString() + ", default is " + Logger.defaultLMode
-    ).choice(*Logger.LMODE.entries.map { it.name }.toTypedArray(), ignoreCase = true)
+    ).choice(*Logger.LMODE.entries.map { it.name }.toTypedArray(), ignoreCase = true).
+        validate { containOptionNames(it)}
 
     private val t by option(
         CMDARGS.TIMEOUT.paramName,
+        metavar = "timeout",
         help = "Timeout before force terminating child processes, default is " + NewExecutor.DEFAULT_TIMEOUT
-    )
+    ).validate { containOptionNames(it)}
 
     private val items by argument(
         name = "placeholders",
@@ -99,17 +124,18 @@ class PWApp : CliktCommand(name = BuildKonfig.applicationName) {
         )
     ).multiple().optional()
 
+    @OptIn(ExperimentalTime::class)
     override fun run() {
+        runId = runidOpt
+        Logger.init(lMode)
+        Logger.get().log("ISO time is ${Clock.System.now()}, we are starting...")
+        Logger.get().log("Helpful WinAPI errors table: " +
+                "https://learn.microsoft.com/en-us/windows/win32/debug/system-error-codes")
         runLogic()
     }
 
     @OptIn(ExperimentalTime::class, ExperimentalAtomicApi::class)
     private fun runLogic() {
-        Logger.init(lMode)
-        Logger.get().log("ISO time is ${Clock.System.now()}, we are starting...")
-        Logger.get().log("Helpful WinAPI errors table: " +
-                "https://learn.microsoft.com/en-us/windows/win32/debug/system-error-codes")
-
         var isTextSession = false
         val hIn = GetStdHandle(STD_INPUT_HANDLE)
         if (hIn == INVALID_HANDLE_VALUE) {
@@ -329,6 +355,12 @@ class PWApp : CliktCommand(name = BuildKonfig.applicationName) {
             Logger.safeGet().log(longMessage)
         }
 
+        fun internalLog(ex: Throwable, exitCode: Int) {
+            val message = "ErrorCode=$exitCode, Error message is: " +
+                    ex.message + "\n"
+            Logger.safeGet().log(message)
+        }
+
         return try {
             this.parse(argv)
             SUCCESSFUL_RETURN
@@ -337,7 +369,11 @@ class PWApp : CliktCommand(name = BuildKonfig.applicationName) {
             when (ex) {
                 is ErrorCodeAware -> {
                     exitCode = ex.errorCode
-                    internalLogLong(ex, exitCode)
+                    when (exitCode) {
+                        CONFIGURATION_CONSUMER_ABSENT,
+                        ERROR_SETUP_CONSOLE_STATE -> internalLog(ex, exitCode)
+                        else -> internalLogLong(ex, exitCode)
+                    }
                 }
 
                 is ProgramResult -> {
